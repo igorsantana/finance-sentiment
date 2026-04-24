@@ -28,6 +28,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.gridspec import GridSpec
 
+from finance_news.companies import translate_sector
+
 log = logging.getLogger("dashboard")
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -281,16 +283,16 @@ def _panel_sector_sentiment(ax, rows: list[dict], top_n: int = 10) -> None:
         ),
     )[-top_n:]
 
-    sectors = [s for s, _ in items]
+    sector_labels = [translate_sector(s) for s, _ in items]
     pos = [c["positive"] for _, c in items]
     neu = [c["neutral"] for _, c in items]
     neg = [c["negative"] for _, c in items]
 
-    ax.barh(sectors, pos, color=COLORS["positive"], label="Positivo",
+    ax.barh(sector_labels, pos, color=COLORS["positive"], label="Positivo",
             edgecolor="white")
-    ax.barh(sectors, neu, left=pos, color=COLORS["neutral"], label="Neutro",
+    ax.barh(sector_labels, neu, left=pos, color=COLORS["neutral"], label="Neutro",
             edgecolor="white")
-    ax.barh(sectors, neg, left=[p + n for p, n in zip(pos, neu)],
+    ax.barh(sector_labels, neg, left=[p + n for p, n in zip(pos, neu)],
             color=COLORS["negative"], label="Negativo", edgecolor="white")
     ax.set_title("Sentimento por setor", fontsize=13, pad=10,
                  color=COLORS["accent"], fontweight="bold")
