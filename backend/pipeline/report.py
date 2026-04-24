@@ -27,11 +27,11 @@ import numpy as np
 import seaborn as sns
 from matplotlib.gridspec import GridSpec
 
-from finance_news.companies import translate_sector as _pt_sector
+from .companies import translate_sector as _pt_sector
 
 log = logging.getLogger("report")
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = ROOT / "data"
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 

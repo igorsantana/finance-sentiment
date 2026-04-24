@@ -31,7 +31,7 @@ from matplotlib.gridspec import GridSpec
 
 log = logging.getLogger("dashboard")
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = ROOT / "data"
 
 SP_TZ = ZoneInfo("America/Sao_Paulo")

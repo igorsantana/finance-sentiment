@@ -26,7 +26,7 @@ except ImportError:
 
 log = logging.getLogger("fetch_top_companies")
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 OUT_PATH = ROOT / "data" / "companies.csv"
 BRAPI_URL = "https://brapi.dev/api/quote/list"
 

@@ -38,7 +38,7 @@ def _env_workers(default: int = 4) -> int:
 
 log = logging.getLogger("ingest")
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 SOURCES_CSV = ROOT / "sources.csv"
 COMPANIES_CSV = ROOT / "data" / "companies.csv"
 OUT_PATH = ROOT / "data" / "raw" / "raw_articles.jsonl"

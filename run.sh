@@ -18,13 +18,13 @@ COMPANIES=data/companies.csv
 if [[ ! -f "$COMPANIES" ]] || [[ $(find "$COMPANIES" -mtime +7 -print 2>/dev/null) ]]; then
   if [[ -n "${BRAPI_TOKEN:-}" ]]; then
     echo "Refreshing companies.csv…"
-    python scripts/fetch_top_companies.py
+    python backend/scripts/fetch_top_companies.py
   else
     echo "Warning: $COMPANIES missing/stale and BRAPI_TOKEN not set — skipping refresh." >&2
   fi
 fi
 
-python -m finance_news.ingest "$@"
-python -m finance_news.extract
-python -m finance_news.dashboard
-python -m finance_news.report
+python -m backend.pipeline.ingest "$@"
+python -m backend.pipeline.extract
+python -m backend.pipeline.dashboard
+python -m backend.pipeline.report

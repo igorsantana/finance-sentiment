@@ -25,7 +25,7 @@ from . import analysis, companies as companies_mod, entities, logconfig  # noqa:
 
 log = logging.getLogger("extract")
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 IN_PATH = ROOT / "data" / "raw" / "raw_articles.jsonl"
 OUT_DIR = ROOT / "data"
 COMPANIES_CSV = ROOT / "data" / "companies.csv"
@@ -222,7 +222,45 @@ def main(argv: Optional[list[str]] = None) -> int:
         w.writerows(rows)
 
     log.info("Wrote %d row(s) to %s", len(rows), out_path)
+
+    try:
+        from backend.api.db import init_db, upsert_articles
+        init_db()
+        written = upsert_articles(_to_db_rows(rows, day.isoformat()))
+        log.info("Upserted %d article(s) into app.db", written)
+    except Exception as e:
+        log.error("DB upsert failed: %s", e)
+
     return 0
+
+
+_LIST_COLUMNS = (
+    "subjects", "matched_companies", "matched_tickers", "sectors",
+    "companies", "persons", "countries", "currencies", "conflicts",
+)
+
+
+def _to_db_rows(rows: list[dict], day: str) -> list[dict]:
+    out: list[dict] = []
+    for r in rows:
+        rec = {
+            "date": day,
+            "site": r.get("site", ""),
+            "source_kind": r.get("source_kind", ""),
+            "source_key": r.get("source_key", ""),
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "published_at": r.get("published_at", ""),
+            "author": r.get("author") or None,
+            "sentiment": r.get("sentiment", ""),
+            "sentiment_score": float(r["sentiment_score"]) if r.get("sentiment_score") else None,
+            "summary": r.get("summary", ""),
+        }
+        for col in _LIST_COLUMNS:
+            raw = r.get(col, "") or ""
+            rec[col] = [x for x in raw.split("|") if x]
+        out.append(rec)
+    return out
 
 
 if __name__ == "__main__":

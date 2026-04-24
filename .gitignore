@@ -3,4 +3,6 @@
 __pycache__/
 *.pyc
 data/*
-
+.DS_Store
+node_modules/
+web/dist/

@@ -22,13 +22,13 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from finance_news.companies import (  # noqa: E402
+from backend.pipeline.companies import (  # noqa: E402
     _AMBIGUOUS_ALIASES, _norm_org_set, CompanyMatcher, load_companies,
 )
-from finance_news.entities import analyze  # noqa: E402
+from backend.pipeline.entities import analyze  # noqa: E402
 
 DATA_DIR = ROOT / "data"
 RAW_JSONL = DATA_DIR / "raw" / "raw_articles.jsonl"

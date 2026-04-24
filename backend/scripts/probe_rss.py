@@ -12,12 +12,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from finance_news.discovery import google_news_feed  # noqa: E402
-from finance_news.ingest import _company_query  # noqa: E402
+from backend.pipeline.discovery import google_news_feed  # noqa: E402
+from backend.pipeline.ingest import _company_query  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_COMPANIES = ROOT / "data" / "companies.csv"
 
 
