@@ -31,7 +31,7 @@ from finance_news.companies import (  # noqa: E402
 from finance_news.entities import analyze  # noqa: E402
 
 DATA_DIR = ROOT / "data"
-RAW_JSONL = DATA_DIR / "raw_articles.jsonl"
+RAW_JSONL = DATA_DIR / "raw" / "raw_articles.jsonl"
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 
 

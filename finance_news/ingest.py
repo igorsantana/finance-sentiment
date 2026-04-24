@@ -41,7 +41,7 @@ log = logging.getLogger("ingest")
 ROOT = Path(__file__).resolve().parent.parent
 SOURCES_CSV = ROOT / "sources.csv"
 COMPANIES_CSV = ROOT / "data" / "companies.csv"
-OUT_PATH = ROOT / "data" / "raw_articles.jsonl"
+OUT_PATH = ROOT / "data" / "raw" / "raw_articles.jsonl"
 
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 PER_SITE_ARTICLE_CAP = 25
@@ -131,7 +131,7 @@ def process_site(site: dict, today: date) -> list[dict]:
     try:
         mode, cands = discovery.discover(url)
     except Exception as e:
-        log.warning("%s: discovery failed: %s", name, e)
+        log.debug("%s: discovery failed: %s", name, e)
         return []
     cands = discovery.filter_today(cands, today)[:PER_SITE_ARTICLE_CAP]
     log.info("%s: %d candidates after today-filter (mode=%s)", name, len(cands), mode)
@@ -200,7 +200,7 @@ def process_company(company: dict, today: date, pub_map: dict[str, str]) -> list
     try:
         cands = discovery.google_news_feed(query)
     except Exception as e:
-        log.warning("%s: google news failed: %s", ticker, e)
+        log.debug("%s: google news failed: %s", ticker, e)
         return []
     cands = discovery.filter_today(cands, today)[:PER_COMPANY_ARTICLE_CAP]
     log.info("%s: %d candidates after today-filter", ticker, len(cands))
@@ -253,7 +253,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--companies-file", type=Path, default=COMPANIES_CSV,
                    dest="companies_file")
     p.add_argument("--out", type=Path, default=OUT_PATH)
-    p.add_argument("--workers", type=int, default=6)
+    p.add_argument(
+        "--workers", type=int, default=None,
+        help=(
+            "Parallel worker threads for site/company tasks. "
+            "Overrides WORKERS env var (default 4)."
+        ),
+    )
     p.add_argument(
         "--date",
         help="ISO date override (YYYY-MM-DD). Default: today in America/Sao_Paulo.",
@@ -312,9 +318,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 except Exception:
                     pass
 
+    workers = args.workers if args.workers and args.workers > 0 else _env_workers()
+    log.info("Using %d ingest worker(s)", workers)
     written = 0
     with args.out.open("a", encoding="utf-8") as f, ThreadPoolExecutor(
-        max_workers=args.workers
+        max_workers=workers
     ) as ex:
         futures = {}
         for kind, payload in tasks:
@@ -333,7 +341,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             try:
                 articles = fut.result()
             except Exception as e:
-                log.warning("%s:%s crashed: %s", kind, label, e)
+                log.debug("%s:%s crashed: %s", kind, label, e)
                 continue
             for art in articles:
                 if art["url"] in seen_urls:

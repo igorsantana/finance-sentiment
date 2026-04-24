@@ -73,7 +73,7 @@ def load_companies(path: Path) -> list[Company]:
                 market_cap=int(float(r.get("market_cap") or 0)),
             ))
         except (KeyError, ValueError) as e:
-            log.warning("skipping malformed row: %r (%s)", r, e)
+            log.debug("skipping malformed row: %r (%s)", r, e)
     return out
 
 
