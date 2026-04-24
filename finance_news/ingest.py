@@ -5,15 +5,36 @@ import argparse
 import csv
 import json
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-from . import discovery, fetch
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+import tldextract
+
+from . import discovery, fetch, logconfig  # noqa: F401
+
+
+def _env_workers(default: int = 4) -> int:
+    raw = os.environ.get("WORKERS")
+    if not raw:
+        return default
+    try:
+        n = int(raw)
+        return n if n > 0 else default
+    except ValueError:
+        return default
 
 log = logging.getLogger("ingest")
 
@@ -45,6 +66,62 @@ def read_companies(path: Path) -> list[dict]:
 
 def _today_sp() -> date:
     return datetime.now(SP_TZ).date()
+
+
+# --- Publisher resolution (for Google News-sourced articles) -----------------
+# Fallbacks for common PT-BR publishers that may surface via Google News but
+# aren't in sources.csv. Keys are hostnames minus a leading "www.".
+_KNOWN_PUBLISHERS = {
+    "g1.globo.com": "G1",
+    "uol.com.br": "UOL",
+    "economia.uol.com.br": "UOL Economia",
+    "cnnbrasil.com.br": "CNN Brasil",
+    "r7.com": "R7",
+    "terra.com.br": "Terra Economia",
+    "noticias.uol.com.br": "UOL",
+    "oantagonista.com.br": "O Antagonista",
+    "istoe.com.br": "IstoÉ",
+    "valorinveste.globo.com": "Valor Investe",
+    "extra.globo.com": "Extra",
+    "ge.globo.com": "Globo Esporte",
+}
+
+
+def _host_key(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def build_publisher_map(sources: list[dict]) -> dict[str, str]:
+    """hostname → display name, derived from sources.csv + known publishers."""
+    m: dict[str, str] = dict(_KNOWN_PUBLISHERS)
+    for s in sources:
+        key = _host_key(s["url"])
+        if key:
+            m[key] = s["name"]
+    return m
+
+
+def publisher_from_url(url: str, pub_map: dict[str, str]) -> str:
+    """Look up the display name for an article URL.
+
+    Matches progressively shorter hostnames (strip leftmost subdomain labels)
+    so that e.g. `m.valor.globo.com` still resolves to `valor.globo.com`.
+    Falls back to the registered-domain label title-cased (via tldextract so
+    compound suffixes like `.com.br` don't confuse the logic).
+    """
+    host = _host_key(url)
+    if not host:
+        return "Publicação desconhecida"
+    parts = host.split(".")
+    for i in range(len(parts) - 1):
+        candidate = ".".join(parts[i:])
+        if candidate in pub_map:
+            return pub_map[candidate]
+    ext = tldextract.extract(url)
+    if ext.domain:
+        return ext.domain.capitalize()
+    return host.capitalize()
 
 
 # --- Site stream -------------------------------------------------------------
@@ -113,7 +190,7 @@ def _company_query(company: dict) -> str:
     return " OR ".join(terms)
 
 
-def process_company(company: dict, today: date) -> list[dict]:
+def process_company(company: dict, today: date, pub_map: dict[str, str]) -> list[dict]:
     ticker = (company.get("ticker") or "").strip().upper()
     short = company.get("short_name") or company.get("long_name") or ticker
     query = _company_query(company)
@@ -144,7 +221,7 @@ def process_company(company: dict, today: date) -> list[dict]:
             time.sleep(INTER_ARTICLE_SLEEP)
             continue
         out.append({
-            "site": "Google News",
+            "site": publisher_from_url(art.url, pub_map),
             "source_kind": "company",
             "source_key": ticker,
             "source_company_ticker": ticker,
@@ -189,8 +266,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Build task list per mode.
     tasks: list[tuple[str, dict]] = []  # (kind, payload)
 
+    # Publisher map is built from all sources (not just the filtered subset)
+    # so company-stream articles resolve even when --only narrows the sites.
+    all_sources = read_sources(args.sources) if args.sources.exists() else []
+    pub_map = build_publisher_map(all_sources)
+
     if args.mode in ("sites", "both"):
-        sites = read_sources(args.sources)
+        sites = all_sources
         if args.only:
             q = args.only.lower()
             sites = [s for s in sites if q in s["name"].lower()]
@@ -239,7 +321,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             if kind == "site":
                 fut = ex.submit(process_site, payload, target_day)
             else:
-                fut = ex.submit(process_company, payload, target_day)
+                fut = ex.submit(process_company, payload, target_day, pub_map)
             futures[fut] = (kind, payload)
 
         for fut in as_completed(futures):

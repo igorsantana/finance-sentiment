@@ -27,3 +27,4 @@ fi
 python -m finance_news.ingest "$@"
 python -m finance_news.extract
 python -m finance_news.dashboard
+python -m finance_news.report
