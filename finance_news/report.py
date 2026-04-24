@@ -152,25 +152,31 @@ def _panel_company_bars(ax, company_data: dict, top_n: int = 20) -> None:
         return
 
     totals = {c: sum(v.values()) for c, v in counts.items()}
-    # Keep top_n by volume, then sort remaining by tilt
-    top_by_vol = sorted(totals, key=lambda c: totals[c], reverse=True)[:top_n]
-    top_by_tilt = sorted(
-        top_by_vol,
-        key=lambda c: _tilt(counts[c]["positive"], counts[c]["negative"], totals[c]),
-    )
+    # Take the top_n by article count; tilt is the tiebreaker so same-volume
+    # companies group positive-first. Reverse so the biggest ends at the top
+    # of the horizontal bar chart.
+    top = sorted(
+        totals,
+        key=lambda c: (
+            totals[c],
+            _tilt(counts[c]["positive"], counts[c]["negative"], totals[c]),
+        ),
+        reverse=True,
+    )[:top_n]
+    top.reverse()
 
-    pos_vals = [counts[c]["positive"] for c in top_by_tilt]
-    neu_vals = [counts[c]["neutral"]  for c in top_by_tilt]
-    neg_vals = [counts[c]["negative"] for c in top_by_tilt]
+    pos_vals = [counts[c]["positive"] for c in top]
+    neu_vals = [counts[c]["neutral"]  for c in top]
+    neg_vals = [counts[c]["negative"] for c in top]
 
-    ax.barh(top_by_tilt, pos_vals, color=COLORS["positive"], label="Positivo", edgecolor="white")
-    ax.barh(top_by_tilt, neu_vals, left=pos_vals,
+    ax.barh(top, pos_vals, color=COLORS["positive"], label="Positivo", edgecolor="white")
+    ax.barh(top, neu_vals, left=pos_vals,
             color=COLORS["neutral"], label="Neutro", edgecolor="white")
     left_neg = [p + n for p, n in zip(pos_vals, neu_vals)]
-    ax.barh(top_by_tilt, neg_vals, left=left_neg,
+    ax.barh(top, neg_vals, left=left_neg,
             color=COLORS["negative"], label="Negativo", edgecolor="white")
 
-    ax.set_title(f"Sentimento por empresa (maiores {len(top_by_tilt)})",
+    ax.set_title(f"Sentimento por empresa (maiores {len(top)})",
                  fontsize=13, pad=12, color=COLORS["accent"], fontweight="bold")
     ax.set_xlabel("artigos", fontsize=10, color="#555")
     ax.tick_params(axis="y", labelsize=8)
@@ -180,8 +186,8 @@ def _panel_company_bars(ax, company_data: dict, top_n: int = 20) -> None:
     ax.grid(axis="x", linestyle=":", alpha=0.4)
     ax.legend(loc="lower right", frameon=False, fontsize=9)
 
-    max_total = max(totals[c] for c in top_by_tilt) or 1
-    for i, c in enumerate(top_by_tilt):
+    max_total = max(totals[c] for c in top) or 1
+    for i, c in enumerate(top):
         total = totals[c]
         ax.text(total + max_total * 0.01, i, str(total),
                 va="center", fontsize=7.5, color="#444")
@@ -362,7 +368,7 @@ def render(rows: list[dict], target_date: date, out_path: Path) -> Path:
     gs = GridSpec(
         nrows=3, ncols=2, figure=fig,
         height_ratios=[1.4, 6, 6],
-        hspace=0.60, wspace=0.38,
+        hspace=0.60, wspace=0.18,
         left=0.07, right=0.96, top=0.96, bottom=0.04,
     )
 
@@ -400,7 +406,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--input", dest="in_path", type=Path,
                    help="Input CSV. Default: data/news_<date>.csv")
     p.add_argument("--output", dest="out_path", type=Path,
-                   help="Output PNG. Default: data/report_<date>.png")
+                   help="Output PNG. Default: data/images/<date>/report.png")
     args = p.parse_args(argv)
 
     day = (
@@ -409,7 +415,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         else datetime.now(SP_TZ).date()
     )
     in_path  = args.in_path  or DATA_DIR / f"news_{day.isoformat()}.csv"
-    out_path = args.out_path or DATA_DIR / f"report_{day.isoformat()}.png"
+    out_path = args.out_path or DATA_DIR / "images" / day.isoformat() / "report.png"
 
     if not in_path.exists():
         log.error("Input CSV missing: %s — run the extract stage first.", in_path)

@@ -26,7 +26,7 @@ from . import analysis, companies as companies_mod, entities, logconfig  # noqa:
 log = logging.getLogger("extract")
 
 ROOT = Path(__file__).resolve().parent.parent
-IN_PATH = ROOT / "data" / "raw_articles.jsonl"
+IN_PATH = ROOT / "data" / "raw" / "raw_articles.jsonl"
 OUT_DIR = ROOT / "data"
 COMPANIES_CSV = ROOT / "data" / "companies.csv"
 

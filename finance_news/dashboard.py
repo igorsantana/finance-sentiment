@@ -28,7 +28,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.gridspec import GridSpec
 
-from finance_news.companies import translate_sector
 
 log = logging.getLogger("dashboard")
 
@@ -215,8 +214,9 @@ def _panel_top_countries(ax, rows: list[dict], top_n: int = 10) -> None:
                 va="center", fontsize=8, color="#333")
 
 
-def _panel_sentiment_by_site(ax, rows: list[dict]) -> None:
-    # Per-site sentiment counts, sorted by net sentiment (pos - neg).
+def _panel_sentiment_by_site(ax, rows: list[dict], top_n: int = 25) -> None:
+    # Per-site sentiment counts, sorted by total article count so the most
+    # prolific publishers sit at the top of the panel.
     per_site: dict[str, Counter] = defaultdict(Counter)
     for r in rows:
         if not r["site"] or not r["sentiment"]:
@@ -230,79 +230,32 @@ def _panel_sentiment_by_site(ax, rows: list[dict]) -> None:
         ax.axis("off")
         return
 
-    sites = sorted(
-        per_site.keys(),
-        key=lambda s: (
-            (per_site[s]["positive"] - per_site[s]["negative"])
-            / max(sum(per_site[s].values()), 1)
-        ),
-    )
-    pos = [per_site[s]["positive"] for s in sites]
-    neu = [per_site[s]["neutral"] for s in sites]
-    neg = [per_site[s]["negative"] for s in sites]
+    # Keep the top N by article count, reversed so the biggest ends at the
+    # top of the horizontal-bar chart.
+    ranked = sorted(
+        per_site.items(),
+        key=lambda kv: sum(kv[1].values()),
+        reverse=True,
+    )[:top_n]
+    ranked.reverse()
+    sites = [s for s, _ in ranked]
+    pos = [c["positive"] for _, c in ranked]
+    neu = [c["neutral"] for _, c in ranked]
+    neg = [c["negative"] for _, c in ranked]
 
     ax.barh(sites, pos, color=COLORS["positive"], label="Positivo", edgecolor="white")
     ax.barh(sites, neu, left=pos, color=COLORS["neutral"], label="Neutro", edgecolor="white")
     ax.barh(sites, neg, left=[p + n for p, n in zip(pos, neu)],
             color=COLORS["negative"], label="Negativo", edgecolor="white")
-    ax.set_title("Sentimento por veículo", fontsize=13, pad=10,
+    ax.set_title("Sentimento por veículo", fontsize=14, pad=10,
                  color=COLORS["accent"], fontweight="bold")
-    ax.set_xlabel("artigos", fontsize=10, color="#555")
-    ax.tick_params(axis="y", labelsize=9)
-    ax.tick_params(axis="x", labelsize=9)
+    ax.set_xlabel("artigos", fontsize=11, color="#555")
+    ax.tick_params(axis="y", labelsize=11)
+    ax.tick_params(axis="x", labelsize=10)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
     ax.grid(axis="x", linestyle=":", alpha=0.4)
-    ax.legend(loc="lower right", frameon=False, fontsize=9)
-
-
-def _panel_sector_sentiment(ax, rows: list[dict], top_n: int = 10) -> None:
-    """Stacked bar of positive/neutral/negative counts per BrAPI sector."""
-    per_sector: dict[str, Counter] = defaultdict(Counter)
-    for r in rows:
-        sectors = _parse_pipe(r.get("sectors") or "")
-        sent = r.get("sentiment", "")
-        if not sectors or not sent:
-            continue
-        for s in sectors:
-            per_sector[s][sent] += 1
-
-    if not per_sector:
-        ax.text(0.5, 0.5, "sem dados de setor",
-                ha="center", va="center", transform=ax.transAxes,
-                color="#888")
-        ax.axis("off")
-        return
-
-    # Sort by net sentiment tilt so the most positive sector is at top.
-    items = sorted(
-        per_sector.items(),
-        key=lambda kv: (
-            (kv[1]["positive"] - kv[1]["negative"])
-            / max(sum(kv[1].values()), 1)
-        ),
-    )[-top_n:]
-
-    sector_labels = [translate_sector(s) for s, _ in items]
-    pos = [c["positive"] for _, c in items]
-    neu = [c["neutral"] for _, c in items]
-    neg = [c["negative"] for _, c in items]
-
-    ax.barh(sector_labels, pos, color=COLORS["positive"], label="Positivo",
-            edgecolor="white")
-    ax.barh(sector_labels, neu, left=pos, color=COLORS["neutral"], label="Neutro",
-            edgecolor="white")
-    ax.barh(sector_labels, neg, left=[p + n for p, n in zip(pos, neu)],
-            color=COLORS["negative"], label="Negativo", edgecolor="white")
-    ax.set_title("Sentimento por setor", fontsize=13, pad=10,
-                 color=COLORS["accent"], fontweight="bold")
-    ax.set_xlabel("artigos", fontsize=10, color="#555")
-    ax.tick_params(axis="y", labelsize=9)
-    ax.tick_params(axis="x", labelsize=9)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-    ax.grid(axis="x", linestyle=":", alpha=0.4)
-    ax.legend(loc="lower right", frameon=False, fontsize=9)
+    ax.legend(loc="lower right", frameon=False, fontsize=10)
 
 
 def _panel_currencies(ax, rows: list[dict], top_n: int = 8) -> None:
@@ -334,58 +287,15 @@ def _panel_currencies(ax, rows: list[dict], top_n: int = 8) -> None:
                 va="center", fontsize=8, color="#333")
 
 
-def _panel_headline_callouts(ax, rows: list[dict]) -> None:
-    """Show the most confident positive + negative headlines."""
-    ax.axis("off")
-
-    def best(sentiment: str, k: int = 3) -> list[tuple[str, str, float]]:
-        subset = [
-            (
-                r["title"][:95],
-                r["site"],
-                float(r["sentiment_score"] or 0.0),
-            )
-            for r in rows
-            if r.get("sentiment") == sentiment and r.get("title")
-        ]
-        subset.sort(key=lambda x: x[2], reverse=True)
-        return subset[:k]
-
-    y = 0.92
-    ax.text(0.01, y, "Destaques do dia", fontsize=13, fontweight="bold",
-            color=COLORS["accent"], transform=ax.transAxes)
-    y -= 0.10
-
-    for label, sentiment in (("Positivos", "positive"), ("Negativos", "negative")):
-        ax.text(
-            0.01, y, label, fontsize=11, fontweight="bold",
-            color=COLORS[sentiment], transform=ax.transAxes,
-        )
-        y -= 0.07
-        items = best(sentiment)
-        if not items:
-            ax.text(0.03, y, "— sem artigos nessa categoria hoje —",
-                    fontsize=9, color="#888", transform=ax.transAxes,
-                    style="italic")
-            y -= 0.08
-            continue
-        for title, site, score in items:
-            ax.text(0.03, y, f"• {title}", fontsize=9.5,
-                    color="#222", transform=ax.transAxes)
-            y -= 0.05
-            ax.text(0.05, y, f"{site}  ·  confiança {score:.2f}",
-                    fontsize=8.5, color="#888", transform=ax.transAxes)
-            y -= 0.06
-        y -= 0.02
-
-
 def render(rows: list[dict], target_date: date, out_path: Path) -> Path:
     sns.set_theme(style="white")
-    fig = plt.figure(figsize=(16, 14), facecolor=COLORS["bg"])
+    fig = plt.figure(figsize=(16, 15), facecolor=COLORS["bg"])
     gs = GridSpec(
-        nrows=4, ncols=2, figure=fig,
-        height_ratios=[0.9, 3.0, 3.0, 2.6],
-        hspace=0.55, wspace=0.22,
+        nrows=3, ncols=2, figure=fig,
+        # Row 2 is ~2× the height of row 1 so `Sentimento por veículo`
+        # gets enough vertical space to render 25 publishers legibly.
+        height_ratios=[0.9, 3.0, 5.5],
+        hspace=0.45, wspace=0.18,
         left=0.06, right=0.97, top=0.96, bottom=0.04,
     )
 
@@ -394,13 +304,8 @@ def render(rows: list[dict], target_date: date, out_path: Path) -> Path:
     ax_companies = fig.add_subplot(gs[1, 1])
     ax_countries = fig.add_subplot(gs[2, 0])
     ax_sites = fig.add_subplot(gs[2, 1])
-    ax_sectors = fig.add_subplot(gs[3, 0])
-    ax_callouts = fig.add_subplot(gs[3, 1])
 
-    for ax in (
-        ax_donut, ax_companies, ax_countries,
-        ax_sites, ax_sectors, ax_callouts,
-    ):
+    for ax in (ax_donut, ax_companies, ax_countries, ax_sites):
         ax.set_facecolor(COLORS["bg"])
 
     _panel_header(ax_header, rows, target_date)
@@ -408,8 +313,6 @@ def render(rows: list[dict], target_date: date, out_path: Path) -> Path:
     _panel_top_companies(ax_companies, rows)
     _panel_top_countries(ax_countries, rows)
     _panel_sentiment_by_site(ax_sites, rows)
-    _panel_sector_sentiment(ax_sectors, rows)
-    _panel_headline_callouts(ax_callouts, rows)
 
     fig.savefig(out_path, dpi=130, facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -429,7 +332,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--in", dest="in_path", type=Path,
                    help="Input CSV. Default: data/news_<date>.csv")
     p.add_argument("--out", type=Path,
-                   help="Output PNG. Default: data/dashboard_<date>.png")
+                   help="Output PNG. Default: data/images/<date>/dashboard.png")
     args = p.parse_args(argv)
 
     day = (
@@ -438,7 +341,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         else datetime.now(SP_TZ).date()
     )
     in_path = args.in_path or DATA_DIR / f"news_{day.isoformat()}.csv"
-    out_path = args.out or DATA_DIR / f"dashboard_{day.isoformat()}.png"
+    out_path = args.out or DATA_DIR / "images" / day.isoformat() / "dashboard.png"
 
     if not in_path.exists():
         log.error("Input CSV missing: %s — run the extract stage first.", in_path)
