@@ -1,36 +1,71 @@
-export type DateEntry = {
-  date: string;
-  article_count: number;
-  has_csv: boolean;
-  has_dashboard: boolean;
-  has_report: boolean;
+export type DatesPayload = {
+  processed: string[];
+  with_articles: string[];
 };
 
-export type NamedCount = { name: string; count: number };
-export type SentimentBucket = { label: string; count: number };
+export type StreamEvent =
+  | {
+      type: "log";
+      level: string;
+      logger: string;
+      message: string;
+    }
+  | {
+      type: "progress";
+      stage: "ingest" | "extract" | "render" | string;
+      current: number;
+      total: number;
+    }
+  | { type: "done"; n_fetched: number; n_extracted: number }
+  | { type: "error"; message: string };
 
-export type Summary = {
-  date: string;
-  total: number;
-  sentiment: SentimentBucket[];
-  top_companies: NamedCount[];
-  top_sites: NamedCount[];
-  top_sectors: NamedCount[];
-};
-
-export type Health = {
-  status: string;
-  scheduler: string;
-  next_run: string | null;
-  db: string;
-};
-
-async function j<T>(path: string): Promise<T> {
-  const r = await fetch(path);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText} — ${path}`);
-  return r.json() as Promise<T>;
+export async function getDates(): Promise<DatesPayload> {
+  const r = await fetch("/api/dates");
+  if (!r.ok) throw new Error(`GET /api/dates → ${r.status}`);
+  return r.json();
 }
 
-export const listDates = () => j<DateEntry[]>("/api/dates");
-export const getSummary = (date: string) => j<Summary>(`/api/summary/${date}`);
-export const getHealth = () => j<Health>("/api/health");
+export async function startRun(
+  date: string,
+): Promise<{ run_id: string; stream_url: string }> {
+  const r = await fetch("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ date }),
+  });
+  if (!r.ok) throw new Error(`POST /api/runs → ${r.status}`);
+  return r.json();
+}
+
+export function openStream(
+  streamUrl: string,
+  onEvent: (ev: StreamEvent) => void,
+  onClose?: () => void,
+): EventSource {
+  const es = new EventSource(streamUrl);
+  es.onmessage = (e) => {
+    try {
+      onEvent(JSON.parse(e.data) as StreamEvent);
+    } catch (err) {
+      console.warn("bad SSE payload", err, e.data);
+    }
+  };
+  // Important: do NOT close the EventSource on every `error` event. The
+  // browser fires `error` on transient drops (and then auto-reconnects on
+  // its own); closing here would kill the session after the first blip.
+  // We only treat it as terminal once the connection is truly closed.
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED) {
+      onClose?.();
+    }
+  };
+  return es;
+}
+
+export function toIsoDate(d: Date): string {
+  // Local-tz aware ISO date (YYYY-MM-DD); avoids the toISOString UTC shift.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
