@@ -1,234 +1,148 @@
-# Brazilian Finance News — Daily Scraper + Web App
+# Brazilian Finance News
 
-Pulls today's main finance articles from the 15 Portuguese-language sites in
-`sources.csv`, plus Google News coverage per top-150 B3 company, and serves
-the results through a FastAPI backend with a small React frontend. A
-scheduler re-runs the whole pipeline every day at **23:50
-America/Sao_Paulo**.
+A daily NLP pipeline over Portuguese-language financial news. For every B3
+company tracked by BrAPI it queries Google News, fetches the articles, runs
+NER + sentiment + ticker matching, stores everything in Postgres, and
+renders two PNGs (a market-wide dashboard and a company / sector report).
+A terminal TUI is bundled for human-judging articles against the model's
+sentiment label.
 
-## Layout
+## Architecture
 
 ```
-sources.csv                       input: name, year, url, type
-backend/
-  pipeline/                       the daily scraper + NER + sentiment pipeline
-    discovery.py                  RSS probing + Google News search + homepage link heuristics
-    fetch.py                      trafilatura wrapper (text + metadata)
-    entities.py                   spaCy NER + country/currency dictionaries
-    analysis.py                   FinBERT-PT-BR sentiment + subject ranking + conflicts
-    companies.py                  Top-150 loader + alias matcher
-    ingest.py                     Stage 1 — sites + companies discovery → JSONL
-    extract.py                    Stage 2 — NER + sentiment + company match → daily CSV + DB upsert
-    dashboard.py                  Stage 3 — render daily PNG dashboard
-    report.py                     Stage 3b — render company + sector report PNG
-  api/                            FastAPI server + APScheduler cron
-    main.py                       app factory, lifespan (scheduler start/stop)
-    db.py / models.py / schemas.py  SQLAlchemy engine, ORM, Pydantic
-    scheduler.py                  daily cron at 23:50 America/Sao_Paulo
-    routes/                       /api/dates, /api/news, /api/summary, /api/files, /api/runs
-    services/                     catalog, news queries, subprocess pipeline runner
-  scripts/
-    fetch_top_companies.py        BrAPI.dev → data/companies.csv (weekly refresh)
-    backfill_db.py                load existing news_*.csv into data/app.db
-    probe_rss.py                  validate per-company Google News coverage
-    audit_company_matches.py      diagnose false-positive company matches
-web/                              Vite + React + TypeScript frontend skeleton
-data/
-  companies.csv                   top-150 B3 companies by market cap
-  app.db                          SQLite — source of truth for the API
-  raw/raw_articles.jsonl          ingest output / extract input
-  news_YYYY-MM-DD.csv             extract deliverable (also kept as audit log)
-  images/YYYY-MM-DD/dashboard.png offline dashboard image
-  images/YYYY-MM-DD/report.png    company + sector report
-  logs/run_<id>.log               pipeline run output (one per scheduled/manual run)
-run.sh                            companies refresh → ingest → extract → dashboard → report
+        ┌────────────┐    cron  ┌─────────────────────┐
+        │  cron svc  │─────────▶│ python -m           │
+        │ (TZ=BRT)   │  23:50   │  finance_news.      │
+        └────────────┘          │  pipeline run       │
+                                └──────────┬──────────┘
+                                           │
+                                           ▼
+   ┌─────────────┐    psycopg3      ┌──────────────┐
+   │   app svc   │◀────────────────▶│   db svc     │
+   │ (Python)    │                  │ Postgres 16  │
+   └──────┬──────┘                  └──────────────┘
+          │ matplotlib
+          ▼
+   data/images/<date>/{dashboard,report}.png
 ```
 
-## Setup
+Three Compose services:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m spacy download pt_core_news_lg
+- `db`     — `postgres:16-alpine`, named volume `pgdata`, `5432` exposed.
+- `app`    — Python 3.11, spaCy `pt_core_news_lg` baked in, repo bind-mounted
+             at `/app`, sleeps idle until you `make ingest` / `make judge`.
+- `cron`   — Same image, runs `scripts/cron_loop.py` which fires
+             `pipeline run` daily at 23:50 America/Sao_Paulo.
 
-# Free token for BrAPI.dev (top-150 company list). Sign up at https://brapi.dev.
-export BRAPI_TOKEN=<your-token>
-python backend/scripts/fetch_top_companies.py   # writes data/companies.csv
+## Quickstart
 
-# Frontend (optional — Node 18+)
-(cd web && npm install)
+```sh
+cp .env.example .env       # set BRAPI_TOKEN
+make build                 # ~10 min on first run; pulls torch + pt_core_news_lg
+make up                    # bring up db + app + cron
+make migrate               # apply migrations/*.sql (idempotent)
+make companies             # populate `companies` from BrAPI (all tickers)
+make full                  # ingest + extract + render
 ```
 
-The API will auto-create `data/app.db` on first start. If you already have
-`data/news_*.csv` files from previous pipeline runs, import them once:
+After `make full`, find the artifacts under `data/images/<today>/`. Every
+operation also runs cleanly stand-alone:
 
-```bash
-python backend/scripts/backfill_db.py
+```sh
+make ingest        # fetch fresh articles for today (DB writes only)
+make extract       # run NLP on rows where sentiment IS NULL
+make dashboard     # render data/images/<today>/dashboard.png
+make report        # render data/images/<today>/report.png
+make status        # JSON: row counts + last 10 runs
+make psql          # psql shell on the local DB
+make judge         # interactive TUI; q to quit
+make judge-stats   # confusion matrix, bad_match top-N, agreement by sector
+make shell         # bash inside the app container
+make ps / make logs / make down / make nuke
 ```
 
-## Run the web app
+## Schema
 
-Backend:
-```bash
-uvicorn backend.api.main:app --reload --port 8000
+All tables in [`migrations/001_init.sql`](migrations/001_init.sql); seed data
+for `publishers` in [`migrations/002_seed_publishers.sql`](migrations/002_seed_publishers.sql).
+Apply via `make migrate`.
+
+| Table              | Purpose                                                      |
+|--------------------|--------------------------------------------------------------|
+| `publishers`       | Hostname → display name + ownership + affiliations (TEXT[]). |
+| `companies`        | Every B3 ticker from BrAPI; refreshed weekly.                |
+| `articles`         | One row per fetched URL. `sentiment IS NULL` until extract.  |
+| `judgments`        | Human labels keyed by `judge`; bypass the unique-per-article rule so re-judging is allowed. |
+| `runs`             | One row per `kind ∈ {ingest, extract, full}` invocation.     |
+| `schema_migrations`| Tracked by `scripts/migrate.py`.                              |
+
+`articles` array columns (`subjects`, `companies_ner`, `persons`,
+`countries`, `currencies`, `matched_tickers`, `conflicts`) are `TEXT[]`. A
+GIN index on `matched_tickers` makes ticker-filtered queries fast.
+
+## Code layout
+
+```
+finance_news/
+  api.py             FastAPI: /api/dates, /api/runs, /api/runs/<id>/stream
+  pipeline.py        run_ingest / run_extract / run_full / pipeline_status
+  ingest.py          Google News → articles table (one query per company)
+  extract.py         NER + subjects + sentiment + matcher → update articles
+  logconfig.py       silence_third_party() shared by every entrypoint
+  nlp/
+    analysis.py      SentimentAnalyzer + rank_subjects + detect_conflicts
+    entities.py      spaCy NER wrapper
+    companies.py     Company dataclass, CompanyMatcher, sector translation
+  store/
+    db.py            psycopg3 access layer (only place SQL lives)
+    publishers.py    db.lookup_publisher + progressive-suffix fallback
+  net/
+    discovery.py     google_news_feed + filter_today + Candidate
+    fetch.py         article body fetcher (trafilatura)
+  render/
+    dashboard.py     render(rows, date) -> bytes + CLI shim
+    report.py        render(rows, date) -> bytes + CLI shim
+migrations/          SQL files, applied in lexical order
+scripts/
+  migrate.py         apply migrations/*.sql idempotently
+  cron_loop.py       daily scheduler for the cron container
+  companies/
+    fetch_top.py     BrAPI → companies table
+  judging/
+    cli.py           interactive TUI
+    stats.py         confusion matrix + bad_match top-N
+  diagnostics/
+    probe_rss.py     verify Google News coverage
+    audit_matches.py flag likely false positives in matched_tickers
 ```
 
-Frontend (in a second terminal):
-```bash
-cd web && npm run dev
+## Judging flow
+
+```
+make judge             # one article per screen
+  p / n / x  → positive / negative / neutral
+  b          → bad_match (the matched ticker is wrong)
+  s          → skip (recorded so it isn't re-prompted)
+  o          → open URL in browser
+  m          → free-text note then label
+  u          → undo last label (deletes the row)
+  q          → quit
+
+make judge-stats       # confusion matrix model vs human, etc.
 ```
 
-Open **http://localhost:5173** — the Vite dev server proxies `/api` to
-`http://localhost:8000`.
+Filters: `--judge`, `--ticker`, `--sentiment`, `--since`, `--only-matched`.
+The default judge name comes from `$JUDGE_NAME`, falling back to `$USER`.
 
-Useful endpoints (full schema at `http://localhost:8000/docs`):
+## Operational notes
 
-| endpoint | returns |
-|---|---|
-| `GET /api/health` | `{status, scheduler, next_run, db}` |
-| `GET /api/dates` | available dates with article counts + artifact flags |
-| `GET /api/news/{date}` | article rows (filters: `sentiment`, `company`, `site`; paginated) |
-| `GET /api/summary/{date}` | sentiment mix + top companies/sites/sectors |
-| `GET /api/files/{date}/{csv\|dashboard\|report}` | raw CSV or PNG download |
-| `POST /api/runs` | kick the pipeline on demand (body: `{date?, stages?}`) |
-| `GET /api/runs` / `GET /api/runs/{id}` | run history + per-stage status |
-
-### Scheduled runs
-
-When the backend is running, APScheduler fires the full pipeline every day
-at 23:50 America/Sao_Paulo. Each run is a background `subprocess` — models
-are only loaded in the worker, so HTTP requests stay responsive. State is
-persisted in the `runs` table and the log ends up at
-`data/logs/run_<id>.log`.
-
-To force a run now:
-```bash
-curl -X POST http://localhost:8000/api/runs -H 'content-type: application/json' -d '{}'
-```
-
-## Run the pipeline directly (CLI)
-
-End-to-end:
-```bash
-./run.sh
-```
-
-Individually:
-```bash
-python -m backend.pipeline.ingest                    # both streams (default)
-python -m backend.pipeline.ingest --mode sites       # only sources.csv
-python -m backend.pipeline.ingest --mode companies   # only Google News per ticker
-python -m backend.pipeline.ingest --only InfoMoney   # single-site smoke test
-python -m backend.pipeline.ingest --ticker PETR4     # single-ticker smoke test
-python -m backend.pipeline.extract                   # NER + sentiment + company match + DB upsert
-python -m backend.pipeline.extract --companies-only  # drop articles w/o top-150 match
-python -m backend.pipeline.dashboard                 # render PNG dashboard
-python -m backend.pipeline.report                    # render company + sector PNG
-
-python backend/scripts/fetch_top_companies.py        # refresh companies.csv
-python backend/scripts/probe_rss.py                  # validate per-company feeds
-python backend/scripts/probe_rss.py --limit 20 --verbose
-python backend/scripts/audit_company_matches.py      # diagnose suspicious matches
-```
-
-## Configuration
-
-| env var | default | notes |
-|---|---|---|
-| `WORKERS` | 4 | Parallel worker threads for ingest + extract |
-| `BRAPI_TOKEN` | — | Required by `fetch_top_companies.py` |
-
-`.env` is loaded automatically (both by `run.sh` and by each pipeline stage
-via python-dotenv).
-
-### Company-centric discovery
-
-The pipeline runs **two parallel streams**, merged and deduplicated by URL:
-
-- **Site stream** — every outlet in `sources.csv`, via their RSS feeds. Gives
-  broad macro coverage (politics, regulation, commodities).
-- **Company stream** — for each of the top-150 B3 companies (by market cap,
-  via BrAPI.dev), a Google News RSS query `"<short_name>" OR "<long_name>" OR
-  <ticker>` aggregates PT-BR coverage from dozens of outlets we don't poll
-  directly. Yields targeted per-company articles.
-
-Every article carries `matched_companies`, `matched_tickers`, and `sectors`
-(empty when no top-150 mention was found). Use `--companies-only` in extract
-to keep only company-tagged articles.
-
-### Dashboard
-
-`backend/pipeline/dashboard.py` reads `data/news_<date>.csv` and writes
-`data/images/<date>/dashboard.png` — a single-page offline image with:
-
-- Header: article + source counts and the positive/neutral/negative mix.
-- Donut of overall sentiment.
-- Top companies mentioned, bars colored by net sentiment (green = net
-  positive, red = net negative, gray = mixed/neutral).
-- Top countries mentioned.
-- Sentiment by publisher (stacked horizontal bar).
-
-Uses matplotlib + seaborn with the `Agg` backend so it works on headless
-machines.
-
-## Output
-
-`data/news_YYYY-MM-DD.csv` columns (same fields are also stored in the
-`articles` table of `data/app.db`):
-
-| column        | notes                                              |
-|---------------|----------------------------------------------------|
-| site          | Publication name from `sources.csv`                |
-| title         | Article headline                                   |
-| url           | Canonical article URL                              |
-| published_at  | ISO 8601 timestamp                                 |
-| companies     | `ORG` entities, pipe-separated                     |
-| countries     | Country names in PT, pipe-separated                |
-| currencies    | ISO 4217 codes (BRL, USD, EUR…), pipe-separated    |
-| matched_companies | Top-150 companies mentioned (pipe-separated)   |
-| matched_tickers | Ticker roots of matched companies                |
-| sectors       | BrAPI sectors for matched companies                |
-| source_kind   | `site` or `company` — which stream surfaced it     |
-| source_key    | Site name (site stream) or ticker (company stream) |
-| author        | From article metadata (may be empty)               |
-| subjects      | Top-ranked `ORG`/`PER` subjects, pipe-separated    |
-| sentiment     | `positive` / `neutral` / `negative`                |
-| sentiment_score | Model confidence in [0, 1]                       |
-| persons       | Distinct `PER` entities, pipe-separated            |
-| conflicts     | `publisher_subject:…` / `author_self_reference:…`  |
-| summary       | First 280 chars of article text                    |
-
-### Analysis module
-
-`backend/pipeline/analysis.py` answers three questions per article:
-
-1. **Who/what is it about?** — `ORG`/`PER` entities scored by position (title
-   ×5, lead ×3, body ×1) and frequency. Top-3 become `subjects`.
-2. **Overall sentiment** — `lucas-leme/FinBERT-PT-BR` (BERTimbau fine-tuned on
-   PT-BR financial news). Falls back to `cardiffnlp/twitter-xlm-roberta-base-
-   sentiment` if the primary model fails to download. Runs locally on
-   CPU/MPS; no API calls.
-3. **Author + conflict** — author comes from trafilatura metadata. Conflicts
-   fire when a subject entity belongs to the publisher's corporate family
-   (`PUBLISHER_AFFILIATIONS` map) or when the author's name matches a
-   subject — flagged as `publisher_subject:…` or `author_self_reference:…`.
-
-## Design notes
-
-- **Discovery:** RSS is tried first (homepage `<link rel=alternate>` + common
-  paths like `/feed`, `/rss`). Sites without a working feed fall back to a
-  homepage crawl that keeps only hyphenated-slug URLs on the same domain.
-- **Today-filter:** An article is kept only if its feed date or trafilatura
-  metadata date equals today (America/Sao_Paulo). Undated items are dropped.
-- **Resilience:** Each site runs in its own thread; failures are logged and
-  the run continues. `raw_articles.jsonl` is append-only so re-running is
-  safe (URL dedupe in both stages, and URL-keyed upsert into `app.db`).
-- **Entity extraction:** spaCy `pt_core_news_lg` supplies `ORG`/`LOC`
-  entities; countries are post-filtered by a curated PT country list, and
-  currencies use regex over ISO codes, PT names, and symbols-adjacent-to-
-  numbers. Governmental and media "orgs" are filtered via a stopword list.
-- **Web process isolation:** the FastAPI process never imports spaCy or
-  transformers. Scheduled and manual pipeline runs spawn a child process
-  (`python -m backend.pipeline.<stage>`), so models load only in the worker
-  and HTTP handlers stay responsive.
+- **Worker count** for ingest + extract is the `WORKERS` env var (default 4).
+  spaCy and the HuggingFace pipeline release the GIL during native compute,
+  so `ThreadPoolExecutor` gives real parallel speedup.
+- **Models** are baked into the image (`pt_core_news_lg`) and cached in
+  `/hf_cache` (named volume `hf_cache`) so transformer weights survive image
+  rebuilds.
+- **DB-level dedup**: every `articles` insert is `ON CONFLICT (url) DO NOTHING`.
+  Re-running `make ingest` mid-day is safe.
+- **No fallbacks**: if extract can't load the sentiment model the run fails
+  loudly. We'd rather see an `error` row in `runs` than silent half-data.
