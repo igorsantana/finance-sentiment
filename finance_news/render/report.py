@@ -9,7 +9,6 @@ import argparse
 import io
 import logging
 import sys
-from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -29,6 +28,12 @@ import numpy as np
 import seaborn as sns
 from matplotlib.gridspec import GridSpec
 
+from finance_news.aggregations import (
+    _parse_pipe,
+    _tilt,
+    build_company_df,
+    build_sector_df,
+)
 from finance_news.nlp.companies import translate_sector as _pt_sector
 from finance_news.render.dashboard import load_rows  # shared row-loader
 
@@ -47,46 +52,6 @@ COLORS = {
 }
 SENTIMENT_ORDER = ["positive", "neutral", "negative"]
 SENT_PT = {"positive": "Positivo", "neutral": "Neutro", "negative": "Negativo"}
-
-
-def _parse_pipe(s: str) -> list[str]:
-    return [x.strip() for x in (s or "").split("|") if x.strip()]
-
-
-def _tilt(pos: int, neg: int, total: int) -> float:
-    return (pos - neg) / max(total, 1)
-
-
-def build_company_df(rows: list[dict]) -> dict:
-    counts: dict[str, Counter] = defaultdict(Counter)
-    articles: dict[str, list[dict]] = defaultdict(list)
-    use_matched = any(r.get("matched_companies") for r in rows)
-    field = "matched_companies" if use_matched else "companies"
-    for r in rows:
-        companies = _parse_pipe(r.get(field) or "")
-        sent = r.get("sentiment", "")
-        if not companies or not sent:
-            continue
-        for c in companies:
-            counts[c][sent] += 1
-            articles[c].append(r)
-    return {"counts": counts, "articles": articles}
-
-
-def build_sector_df(rows: list[dict]) -> dict:
-    counts: dict[str, Counter] = defaultdict(Counter)
-    companies: dict[str, Counter] = defaultdict(Counter)
-    for r in rows:
-        sectors = _parse_pipe(r.get("sectors") or "")
-        co_names = _parse_pipe(r.get("matched_companies") or r.get("companies") or "")
-        sent = r.get("sentiment", "")
-        if not sectors or not sent:
-            continue
-        for s in sectors:
-            counts[s][sent] += 1
-            for c in co_names:
-                companies[s][c] += 1
-    return {"counts": counts, "companies": companies}
 
 
 def _panel_header(ax, rows: list[dict], target_date: date) -> None:

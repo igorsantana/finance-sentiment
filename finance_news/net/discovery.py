@@ -11,9 +11,18 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable, Optional
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo
 
 import feedparser
 from dateutil import parser as dateparser
+
+_SP_TZ = ZoneInfo("America/Sao_Paulo")
+
+
+def _sp_date(dt: datetime) -> date:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(_SP_TZ).date()
 
 log = logging.getLogger(__name__)
 
@@ -78,13 +87,17 @@ def google_news_feed(
 def filter_today(
     candidates: Iterable[Candidate], today: date
 ) -> list[Candidate]:
-    """Keep candidates whose feed-reported date == today. Candidates without
-    a feed date are kept so the fetch stage can re-check article metadata."""
+    """Keep candidates whose feed-reported date == today (in SP TZ).
+
+    Candidates without a feed date are kept so the fetch stage can re-check
+    article metadata. ``today`` is interpreted as a date in America/Sao_Paulo
+    to match the rest of the pipeline.
+    """
     kept: list[Candidate] = []
     for c in candidates:
         if c.published is None:
             kept.append(c)
             continue
-        if c.published.date() == today:
+        if _sp_date(c.published) == today:
             kept.append(c)
     return kept
