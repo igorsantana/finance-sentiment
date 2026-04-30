@@ -59,7 +59,6 @@ export function CompaniesStacked({ data }: { data: ReportPayload }) {
     <ChartCard
       title="Empresas — empilhado (20)"
       subtitle="ordenado por saldo"
-      className="lg:col-span-2"
     >
       {rows.length === 0 ? (
         <EmptyTile />

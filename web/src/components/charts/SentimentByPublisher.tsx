@@ -50,7 +50,7 @@ export function SentimentByPublisher({ data }: { data: ReportPayload }) {
   const rows = data.sentimentByPublisher.slice(0, 25).slice().reverse();
 
   return (
-    <ChartCard title="Sentimento por veículo (25)" className="lg:col-span-2">
+    <ChartCard title="Sentimento por veículo (25)">
       {rows.length === 0 ? (
         <EmptyTile />
       ) : (

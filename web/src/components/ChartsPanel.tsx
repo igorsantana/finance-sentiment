@@ -20,7 +20,7 @@ type SlotId =
   | "R2" | "R3" | "R4"
   | "X1" | "X4" | "X5" | "X6" | "X7";
 
-type Slot = { id: SlotId; title: string; wide?: boolean };
+type Slot = { id: SlotId; title: string };
 
 export type ChartsPanelProps = {
   date: string | null;
@@ -34,11 +34,7 @@ function Skeleton() {
 
 function SlotCard({ slot }: { slot: Slot }) {
   return (
-    <ChartCard
-      title={slot.title}
-      subtitle="carregando…"
-      className={slot.wide ? "lg:col-span-2" : undefined}
-    >
+    <ChartCard title={slot.title} subtitle="carregando…">
       <Skeleton />
     </ChartCard>
   );
@@ -114,7 +110,7 @@ function ResumoSection({ data }: { data: ReportPayload | null }) {
             <SlotCard slot={{ id: "D1", title: "Resumo" }} />
             <SlotCard slot={{ id: "D2", title: "Distribuição de sentimento" }} />
             <SlotCard slot={{ id: "D3", title: "Top empresas (12)" }} />
-            <SlotCard slot={{ id: "D5", title: "Sentimento por veículo (25)", wide: true }} />
+            <SlotCard slot={{ id: "D5", title: "Sentimento por veículo (25)" }} />
           </>
         )}
       </div>
@@ -132,14 +128,12 @@ function DetalhesSection({ data }: { data: ReportPayload | null }) {
         {data ? (
           <>
             <CompaniesStacked data={data} />
-            <SectorHeatmap data={data} />
             <SectorDrilldown data={data} />
           </>
         ) : (
           <>
-            <SlotCard slot={{ id: "R2", title: "Empresas — empilhado (20)", wide: true }} />
-            <SlotCard slot={{ id: "R3", title: "Mapa de calor — setores" }} />
-            <SlotCard slot={{ id: "R4", title: "Setores com empresas-chave", wide: true }} />
+            <SlotCard slot={{ id: "R2", title: "Empresas — empilhado (20)" }} />
+            <SlotCard slot={{ id: "R4", title: "Setores com empresas-chave" }} />
           </>
         )}
       </div>
@@ -156,6 +150,7 @@ function InsightsSection({ data }: { data: ReportPayload | null }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {data ? (
           <>
+            <SectorHeatmap data={data} />
             <HourlyTimeline data={data} />
             <ScoreHistogram data={data} />
             <TopSubjects data={data} />
@@ -164,6 +159,7 @@ function InsightsSection({ data }: { data: ReportPayload | null }) {
           </>
         ) : (
           <>
+            <SlotCard slot={{ id: "R3", title: "Mapa de calor — setores" }} />
             <SlotCard slot={{ id: "X1", title: "Linha do tempo (hora)" }} />
             <SlotCard slot={{ id: "X6", title: "Histograma de score" }} />
             <SlotCard slot={{ id: "X4", title: "Top assuntos" }} />

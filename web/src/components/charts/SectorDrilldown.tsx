@@ -109,7 +109,6 @@ export function SectorDrilldown({ data }: { data: ReportPayload }) {
     <ChartCard
       title="Setores com empresas-chave"
       subtitle="ordenado por saldo"
-      className="lg:col-span-2"
     >
       {rows.length === 0 ? (
         <EmptyTile />
