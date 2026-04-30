@@ -97,7 +97,7 @@ function ResumoSection({ data }: { data: ReportPayload | null }) {
       <h2 className="text-xs font-mono uppercase tracking-[0.2em] text-muted-foreground/80">
         Resumo
       </h2>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         {data ? (
           <>
             <HeaderStats data={data} />
@@ -124,7 +124,7 @@ function DetalhesSection({ data }: { data: ReportPayload | null }) {
       <h2 className="text-xs font-mono uppercase tracking-[0.2em] text-muted-foreground/80">
         Detalhes por empresa &amp; setor
       </h2>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         {data ? (
           <>
             <CompaniesStacked data={data} />
@@ -147,7 +147,7 @@ function InsightsSection({ data }: { data: ReportPayload | null }) {
       <h2 className="text-xs font-mono uppercase tracking-[0.2em] text-muted-foreground/80">
         Insights
       </h2>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         {data ? (
           <>
             <SectorHeatmap data={data} />
