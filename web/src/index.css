@@ -24,27 +24,50 @@
     --radius: 0.5rem;
   }
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --background: 240 18% 6%;
+    --foreground: 180 30% 92%;
+    --card: 240 18% 9%;
+    --card-foreground: 180 30% 92%;
+    --primary: 186 100% 55%;
+    --primary-foreground: 240 18% 6%;
+    --secondary: 240 14% 14%;
+    --secondary-foreground: 180 30% 92%;
+    --muted: 240 12% 16%;
+    --muted-foreground: 240 10% 60%;
+    --accent: 320 100% 60%;
+    --accent-foreground: 240 18% 6%;
+    --destructive: 0 90% 62%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 14% 18%;
+    --input: 240 14% 18%;
+    --ring: 186 100% 55%;
   }
   * { @apply border-border; }
   body {
     @apply bg-background text-foreground;
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+}
+
+@layer components {
+  .neon-edge {
+    border-color: hsl(var(--primary) / 0.6);
+    box-shadow: 0 0 10px hsl(var(--primary) / 0.35);
+  }
+  .neon-edge-magenta {
+    border-color: hsl(var(--accent) / 0.6);
+    box-shadow: 0 0 10px hsl(var(--accent) / 0.35);
+  }
+  .scanline {
+    border-bottom: 1px solid transparent;
+    background-image: linear-gradient(
+      to right,
+      transparent,
+      hsl(var(--primary) / 0.18),
+      transparent
+    );
+    background-size: 100% 1px;
+    background-repeat: no-repeat;
+    background-position: bottom;
   }
 }

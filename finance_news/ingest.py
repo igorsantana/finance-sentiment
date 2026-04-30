@@ -93,7 +93,7 @@ def process_company(company: dict[str, Any], today: date) -> list[dict[str, Any]
         log.debug("%s: google news failed: %s", ticker, e)
         return []
     cands = discovery.filter_today(cands, today)[:PER_COMPANY_ARTICLE_CAP]
-    log.info("%s: %d candidates after today-filter", ticker, len(cands))
+    log.info("%s: %d candidates after %s-filter", ticker, len(cands), today)
 
     out: list[dict[str, Any]] = []
     for c in cands:
