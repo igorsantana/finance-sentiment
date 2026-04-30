@@ -47,12 +47,12 @@ export function Currencies({ data }: { data: ReportPayload }) {
       ) : (
         <div style={{ height: Math.max(rows.length * 26, 220) }}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={rows} layout="vertical" margin={{ left: 8, right: 16 }}>
+            <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 16 }}>
               <XAxis type="number" {...xAxisDefaults} />
               <YAxis
                 type="category"
                 dataKey="currency"
-                width={80}
+                width={56}
                 {...yAxisDefaults}
               />
               <Tooltip cursor={tooltipCursor} content={<CurrencyTooltip />} />

@@ -56,9 +56,9 @@ export function SentimentByPublisher({ data }: { data: ReportPayload }) {
       ) : (
         <div style={{ height: Math.max(rows.length * 22, 280) }}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={rows} layout="vertical" margin={{ left: 8, right: 16 }}>
+            <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 16 }}>
               <XAxis type="number" {...xAxisDefaults} />
-              <YAxis type="category" dataKey="site" width={170} {...yAxisDefaults} />
+              <YAxis type="category" dataKey="site" width={140} {...yAxisDefaults} />
               <Tooltip cursor={tooltipCursor} content={<StackTooltip />} />
               {STACK.map((tone) => (
                 <Bar

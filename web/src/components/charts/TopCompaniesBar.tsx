@@ -53,9 +53,9 @@ export function TopCompaniesBar({ data }: { data: ReportPayload }) {
       ) : (
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={rows} layout="vertical" margin={{ left: 8, right: 16 }}>
+            <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 16 }}>
               <XAxis type="number" {...xAxisDefaults} />
-              <YAxis type="category" dataKey="name" width={110} {...yAxisDefaults} />
+              <YAxis type="category" dataKey="name" width={96} {...yAxisDefaults} />
               <Tooltip cursor={tooltipCursor} content={<CompanyTooltip />} />
               <Bar dataKey="total" radius={[0, 4, 4, 0]}>
                 {rows.map((r) => (

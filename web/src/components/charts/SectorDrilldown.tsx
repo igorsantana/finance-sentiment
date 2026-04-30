@@ -115,7 +115,7 @@ export function SectorDrilldown({ data }: { data: ReportPayload }) {
       ) : (
         <div style={{ height: Math.max(rows.length * 36, 320) }}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={rows} layout="vertical" margin={{ left: 8, right: 16 }}>
+            <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 16 }}>
               <XAxis type="number" {...xAxisDefaults} />
               <YAxis
                 type="category"
