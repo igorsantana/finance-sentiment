@@ -20,6 +20,58 @@ export type StreamEvent =
   | { type: "done"; n_fetched: number; n_extracted: number }
   | { type: "error"; message: string };
 
+export type ReportPayload = {
+  date: string;
+  counts: {
+    total: number;
+    publishers: number;
+    bySentiment: { positive: number; neutral: number; negative: number };
+  };
+  topCompanies: Array<{
+    name: string;
+    positive: number;
+    neutral: number;
+    negative: number;
+    total: number;
+    tilt: number;
+  }>;
+  sentimentByPublisher: Array<{
+    site: string;
+    positive: number;
+    neutral: number;
+    negative: number;
+    total: number;
+  }>;
+  sectorMatrix: Array<{
+    sector: string;
+    positive: number;
+    neutral: number;
+    negative: number;
+    tilt: number;
+    topCompanies: string[];
+  }>;
+  hourly: Array<{
+    hour: number;
+    positive: number;
+    neutral: number;
+    negative: number;
+  }>;
+  topSubjects: Array<{ subject: string; count: number }>;
+  topTickers: Array<{ ticker: string; count: number }>;
+  scoreHistogram: Array<{ bucketStart: number; bucketEnd: number; count: number }>;
+  currencies: Array<{ currency: string; count: number }>;
+};
+
+export async function getReport(
+  date: string,
+  signal?: AbortSignal,
+): Promise<ReportPayload | null> {
+  const r = await fetch(`/api/reports/${encodeURIComponent(date)}`, { signal });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GET /api/reports/${date} → ${r.status}`);
+  return r.json();
+}
+
 export async function getDates(): Promise<DatesPayload> {
   const r = await fetch("/api/dates");
   if (!r.ok) throw new Error(`GET /api/dates → ${r.status}`);

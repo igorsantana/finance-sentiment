@@ -35,6 +35,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from finance_news.aggregations import build_report_payload
+from finance_news.nlp.companies import load_companies_from_db
 from finance_news.pipeline import run_full, run_ingest, run_extract
 from finance_news.store import db
 
@@ -287,7 +289,7 @@ def list_dates() -> dict[str, list[str]]:
         with_articles = [r["d"].isoformat() for r in cur.fetchall()]
 
     images_dir = data_dir / "images"
-    processed: list[str] = []
+    image_dates: list[str] = []
     if images_dir.is_dir():
         for child in sorted(images_dir.iterdir()):
             if not child.is_dir():
@@ -298,8 +300,28 @@ def list_dates() -> dict[str, list[str]]:
                 date.fromisoformat(child.name)
             except ValueError:
                 continue
-            processed.append(child.name)
+            image_dates.append(child.name)
+    processed = sorted(set(image_dates) | set(with_articles))
     return {"processed": processed, "with_articles": with_articles}
+
+
+@app.get("/api/reports/{report_date}")
+def get_report(report_date: str) -> dict[str, Any]:
+    try:
+        day = date.fromisoformat(report_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid date")
+    with db.connect() as conn:
+        rows = db.fetch_articles_for_date(conn, day)
+    if not rows:
+        raise HTTPException(status_code=404, detail="no articles for date")
+    sectors_lookup = {
+        c["ticker_root"]: {"short_name": c.get("short_name"), "sector": c.get("sector")}
+        for c in load_companies_from_db()
+    }
+    payload = build_report_payload(rows, sectors_lookup)
+    payload["date"] = day.isoformat()
+    return payload
 
 
 @app.get("/api/health")

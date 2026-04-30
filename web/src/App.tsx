@@ -59,7 +59,7 @@ export default function App() {
     [dates.with_articles],
   );
 
-  const canRun = !running && articleSet.has(runDate);
+  const canRun = !running && /^\d{4}-\d{2}-\d{2}$/.test(runDate);
 
   const handleStart = () => {
     if (!canRun) return;
@@ -91,7 +91,6 @@ export default function App() {
               onRunDateChange={setRunDate}
               running={running}
               canRun={canRun}
-              hasArticles={articleSet.has(runDate)}
               final={final}
               logs={logs}
               onStart={handleStart}

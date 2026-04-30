@@ -9,7 +9,6 @@ export type PipelineViewProps = {
   onRunDateChange: (iso: string) => void;
   running: boolean;
   canRun: boolean;
-  hasArticles: boolean;
   final: string | null;
   logs: LogLine[];
   onStart: () => void;
@@ -20,7 +19,6 @@ export function PipelineView({
   onRunDateChange,
   running,
   canRun,
-  hasArticles,
   final,
   logs,
   onStart,
@@ -64,13 +62,6 @@ export function PipelineView({
             )}
           </Button>
         </div>
-
-        {!hasArticles && !running && (
-          <p className="text-xs text-muted-foreground font-mono">
-            Sem artigos para essa data — selecione outra ou aguarde a próxima
-            execução do cron.
-          </p>
-        )}
 
         {final && (
           <div className="text-sm border border-border rounded-md p-3 bg-muted/30">

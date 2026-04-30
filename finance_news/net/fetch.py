@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from typing import Optional
 
 import trafilatura
@@ -88,7 +88,3 @@ def fetch_article(url: str) -> Optional[Article]:
         published=_parse_date(data.get("date")),
         author=data.get("author"),
     )
-
-
-def is_today(article: Article, today: date) -> bool:
-    return article.published is not None and article.published.date() == today

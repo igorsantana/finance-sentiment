@@ -107,7 +107,11 @@ def process_company(company: dict[str, Any], today: date) -> list[dict[str, Any]
             time.sleep(INTER_ARTICLE_SLEEP)
             continue
         pub = c.published or art.published
-        if pub is None or pub.date() != today:
+        if pub is None:
+            time.sleep(INTER_ARTICLE_SLEEP)
+            continue
+        pub_aware = pub if pub.tzinfo else pub.replace(tzinfo=ZoneInfo("UTC"))
+        if pub_aware.astimezone(SP_TZ).date() != today:
             time.sleep(INTER_ARTICLE_SLEEP)
             continue
         out.append({

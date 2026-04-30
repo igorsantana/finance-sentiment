@@ -41,6 +41,9 @@
     --border: 240 14% 18%;
     --input: 240 14% 18%;
     --ring: 186 100% 55%;
+    --sentiment-positive: 160 100% 55%;
+    --sentiment-neutral: 240 10% 60%;
+    --sentiment-negative: 320 100% 60%;
   }
   * { @apply border-border; }
   body {
