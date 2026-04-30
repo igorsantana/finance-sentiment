@@ -75,8 +75,10 @@ def _finish(
 def run_ingest(
     target_date: Optional[date] = None,
     progress: Optional[ProgressFn] = None,
+    setup_logging: bool = True,
 ) -> RunSummary:
-    _setup_logging()
+    if setup_logging:
+        _setup_logging()
     run_id, started = _start("ingest")
     try:
         from finance_news import ingest
@@ -94,8 +96,10 @@ def run_ingest(
 def run_extract(
     target_date: Optional[date] = None,
     progress: Optional[ProgressFn] = None,
+    setup_logging: bool = True,
 ) -> RunSummary:
-    _setup_logging()
+    if setup_logging:
+        _setup_logging()
     run_id, started = _start("extract")
     try:
         from finance_news import extract
@@ -146,19 +150,21 @@ def _render_daily_artifacts(
 def run_full(
     target_date: Optional[date] = None,
     progress: Optional[ProgressFn] = None,
+    setup_logging: bool = True,
 ) -> RunSummary:
     """Ingest, then extract, then render daily artifacts.
 
     Records a single ``full`` run in the ``runs`` table; the per-stage runs
     recorded by ``run_ingest`` / ``run_extract`` provide finer detail.
     """
-    _setup_logging()
+    if setup_logging:
+        _setup_logging()
     day = target_date or datetime.now(SP_TZ).date()
     run_id, started = _start("full")
     children: list[RunSummary] = []
     try:
-        children.append(run_ingest(target_date=day, progress=progress))
-        children.append(run_extract(target_date=day, progress=progress))
+        children.append(run_ingest(target_date=day, progress=progress, setup_logging=False))
+        children.append(run_extract(target_date=day, progress=progress, setup_logging=False))
         _render_daily_artifacts(day, progress=progress)
     except Exception as e:
         _finish(run_id, status="error", error=repr(e))

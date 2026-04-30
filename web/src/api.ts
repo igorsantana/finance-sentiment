@@ -8,6 +8,7 @@ export type StreamEvent =
       type: "log";
       level: string;
       logger: string;
+      ts: number;
       message: string;
     }
   | {
@@ -25,13 +26,27 @@ export async function getDates(): Promise<DatesPayload> {
   return r.json();
 }
 
+export type ActiveRun = {
+  run_id: string;
+  target_date: string;
+  kind: string;
+  stream_url: string;
+};
+
+export async function getActiveRun(): Promise<ActiveRun | null> {
+  const r = await fetch("/api/runs/active");
+  if (!r.ok) throw new Error(`GET /api/runs/active → ${r.status}`);
+  return r.json();
+}
+
 export async function startRun(
   date: string,
+  kind: "ingest" | "extract" | "full" = "full",
 ): Promise<{ run_id: string; stream_url: string }> {
   const r = await fetch("/api/runs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ date }),
+    body: JSON.stringify({ date, kind }),
   });
   if (!r.ok) throw new Error(`POST /api/runs → ${r.status}`);
   return r.json();
@@ -63,9 +78,12 @@ export function openStream(
 }
 
 export function toIsoDate(d: Date): string {
-  // Local-tz aware ISO date (YYYY-MM-DD); avoids the toISOString UTC shift.
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  // Convert to São Paulo timezone (where articles and runs are stored).
+  const spFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return spFormatter.format(d);
 }
