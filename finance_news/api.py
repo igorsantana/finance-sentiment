@@ -37,7 +37,7 @@ from pydantic import BaseModel
 
 from finance_news.aggregations import build_report_payload
 from finance_news.nlp.companies import load_companies_from_db
-from finance_news.pipeline import run_full, run_ingest, run_extract
+from finance_news.pipeline import run_full, run_ingest, run_extract, run_summarize
 from finance_news.store import db
 
 app = FastAPI(title="Finance News")
@@ -150,6 +150,8 @@ def _run_in_thread(rid: str, ch: RunChannel, target_date: date, kind: str = "ful
                 summary = run_ingest(target_date=target_date, progress=on_progress, setup_logging=False)
             elif kind == "extract":
                 summary = run_extract(target_date=target_date, progress=on_progress, setup_logging=False)
+            elif kind == "summarize":
+                summary = run_summarize(target_date=target_date, progress=on_progress, setup_logging=False)
             else:
                 summary = run_full(target_date=target_date, progress=on_progress, setup_logging=False)
 

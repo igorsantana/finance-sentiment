@@ -201,6 +201,138 @@ def fetch_articles_for_date(
         return cur.fetchall()
 
 
+def fetch_articles_for_company(
+    conn: psycopg.Connection,
+    *,
+    ticker_root: str,
+    day: date,
+) -> list[dict[str, Any]]:
+    """Articles for one company on one SP-day, most-confident first."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT *
+            FROM articles
+            WHERE %s = ANY(matched_tickers)
+              AND (published_at AT TIME ZONE 'America/Sao_Paulo')::date = %s
+            ORDER BY sentiment_score DESC NULLS LAST, published_at DESC
+            """,
+            (ticker_root, day),
+        )
+        return cur.fetchall()
+
+
+# ---------- company day summaries ----------
+
+def upsert_company_summary(
+    conn: psycopg.Connection,
+    *,
+    ticker_root: str,
+    summary_date: date,
+    good: list[str],
+    bad: list[str],
+    article_count: int,
+    model: str,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO company_day_summaries
+                (ticker_root, summary_date, good_points, bad_points,
+                 article_count, model)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (ticker_root, summary_date) DO UPDATE SET
+                good_points   = EXCLUDED.good_points,
+                bad_points    = EXCLUDED.bad_points,
+                article_count = EXCLUDED.article_count,
+                model         = EXCLUDED.model,
+                created_at    = now()
+            """,
+            (ticker_root, summary_date, good, bad, article_count, model),
+        )
+
+
+def fetch_company_summary(
+    conn: psycopg.Connection,
+    *,
+    ticker_root: str,
+    summary_date: date,
+) -> Optional[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT *
+            FROM company_day_summaries
+            WHERE ticker_root = %s AND summary_date = %s
+            """,
+            (ticker_root, summary_date),
+        )
+        return cur.fetchone()
+
+
+# ---------- stock OHLC ----------
+
+def upsert_ohlc(
+    conn: psycopg.Connection,
+    *,
+    ticker_root: str,
+    bars: list[dict[str, Any]],
+) -> int:
+    """Bulk-upsert OHLC bars. Each bar: {bar_date, open, high, low, close, volume}."""
+    if not bars:
+        return 0
+    rows = [
+        (
+            ticker_root,
+            b["bar_date"],
+            b["open"],
+            b["high"],
+            b["low"],
+            b["close"],
+            b.get("volume"),
+        )
+        for b in bars
+    ]
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO stock_ohlc
+                (ticker_root, bar_date, open, high, low, close, volume)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (ticker_root, bar_date) DO UPDATE SET
+                open       = EXCLUDED.open,
+                high       = EXCLUDED.high,
+                low        = EXCLUDED.low,
+                close      = EXCLUDED.close,
+                volume     = EXCLUDED.volume,
+                fetched_at = now()
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def fetch_ohlc_range(
+    conn: psycopg.Connection,
+    *,
+    ticker_root: str,
+    start: date,
+    end: date,
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT bar_date, open, high, low, close, volume
+            FROM stock_ohlc
+            WHERE ticker_root = %s
+              AND bar_date BETWEEN %s AND %s
+            ORDER BY bar_date
+            """,
+            (ticker_root, start, end),
+        )
+        return cur.fetchall()
+
+
 # ---------- judgments ----------
 
 def insert_judgment(
