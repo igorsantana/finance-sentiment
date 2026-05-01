@@ -18,3 +18,4 @@ readchar>=4.0
 fastapi>=0.115
 uvicorn[standard]>=0.30
 openai>=1.40
+yfinance>=0.2.43
