@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { ChevronDown, Cpu, FileBarChart, Zap } from "lucide-react";
+import { formatPtBr } from "../lib/date";
 
 export type Section = "pipeline" | "report";
 
 export type SidebarProps = {
   section: Section;
   reportDate: string | null;
-  processedDates: string[];
+  reportDates: string[];
   onSelectPipeline: () => void;
   onSelectReport: (dateIso: string) => void;
 };
@@ -14,12 +15,12 @@ export type SidebarProps = {
 export function Sidebar({
   section,
   reportDate,
-  processedDates,
+  reportDates,
   onSelectPipeline,
   onSelectReport,
 }: SidebarProps) {
   const [reportsOpen, setReportsOpen] = useState(true);
-  const dates = [...processedDates].sort().reverse();
+  const dates = [...reportDates].sort().reverse();
 
   const baseEntry =
     "w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors";
@@ -80,7 +81,7 @@ export function Sidebar({
                     }`}
                   >
                     <span className="text-primary/60">▸</span>
-                    <span>{d}</span>
+                    <span>{formatPtBr(d)}</span>
                   </button>
                 );
               })

@@ -2,10 +2,10 @@
 
 A daily NLP pipeline over Portuguese-language financial news. For every B3
 company tracked by BrAPI it queries Google News, fetches the articles, runs
-NER + sentiment + ticker matching, stores everything in Postgres, and
-renders two PNGs (a market-wide dashboard and a company / sector report).
-A terminal TUI is bundled for human-judging articles against the model's
-sentiment label.
+NER + sentiment + ticker matching, summarizes the day's coverage per company
+via an LLM, and stores everything in Postgres. A FastAPI + React/Vite web
+app surfaces the results; a terminal TUI is bundled for human-judging
+articles against the model's sentiment label.
 
 ## Architecture
 
@@ -19,40 +19,39 @@ sentiment label.
                                            ▼
    ┌─────────────┐    psycopg3      ┌──────────────┐
    │   app svc   │◀────────────────▶│   db svc     │
-   │ (Python)    │                  │ Postgres 16  │
+   │ FastAPI     │                  │ Postgres 16  │
    └──────┬──────┘                  └──────────────┘
-          │ matplotlib
+          │ HTTP
           ▼
-   data/images/<date>/{dashboard,report}.png
+   web/ (Vite + React)
 ```
 
 Three Compose services:
 
 - `db`     — `postgres:16-alpine`, named volume `pgdata`, `5432` exposed.
 - `app`    — Python 3.11, spaCy `pt_core_news_lg` baked in, repo bind-mounted
-             at `/app`, sleeps idle until you `make ingest` / `make judge`.
+             at `/app`, serves the FastAPI on `:8000`.
 - `cron`   — Same image, runs `scripts/cron_loop.py` which fires
              `pipeline run` daily at 23:50 America/Sao_Paulo.
 
 ## Quickstart
 
 ```sh
-cp .env.example .env       # set BRAPI_TOKEN
+cp .env.example .env       # set BRAPI_TOKEN, LLM_API_KEY (Groq)
 make build                 # ~10 min on first run; pulls torch + pt_core_news_lg
 make up                    # bring up db + app + cron
 make migrate               # apply migrations/*.sql (idempotent)
 make companies             # populate `companies` from BrAPI (all tickers)
-make full                  # ingest + extract + render
+make full                  # ingest + extract + summarize
+make dev                   # backend (uvicorn --reload) + frontend (vite) with HMR
 ```
 
-After `make full`, find the artifacts under `data/images/<today>/`. Every
-operation also runs cleanly stand-alone:
+Open the web UI at http://localhost:5173 (`make dev`) — Vite proxies `/api`
+to the FastAPI on `:8000`. Every operation also runs cleanly stand-alone:
 
 ```sh
 make ingest        # fetch fresh articles for today (DB writes only)
 make extract       # run NLP on rows where sentiment IS NULL
-make dashboard     # render data/images/<today>/dashboard.png
-make report        # render data/images/<today>/report.png
 make status        # JSON: row counts + last 10 runs
 make psql          # psql shell on the local DB
 make judge         # interactive TUI; q to quit
@@ -84,24 +83,26 @@ GIN index on `matched_tickers` makes ticker-filtered queries fast.
 
 ```
 finance_news/
-  api.py             FastAPI: /api/dates, /api/runs, /api/runs/<id>/stream
-  pipeline.py        run_ingest / run_extract / run_full / pipeline_status
+  api.py             FastAPI: reports, companies, stocks, runs, SSE streams
+  pipeline.py        run_ingest / run_extract / run_summarize / run_full
   ingest.py          Google News → articles table (one query per company)
   extract.py         NER + subjects + sentiment + matcher → update articles
+  summaries.py       LLM-backed per-company day summaries (eager, top-N)
+  stocks.py          yfinance OHLC window with DB-backed caching
+  aggregations.py    build_report_payload (consumed by /api/reports/<date>)
   logconfig.py       silence_third_party() shared by every entrypoint
   nlp/
     analysis.py      SentimentAnalyzer + rank_subjects + detect_conflicts
     entities.py      spaCy NER wrapper
     companies.py     Company dataclass, CompanyMatcher, sector translation
+    llm_summary.py   OpenAI-compatible client → {good[], bad[]}
   store/
     db.py            psycopg3 access layer (only place SQL lives)
     publishers.py    db.lookup_publisher + progressive-suffix fallback
   net/
     discovery.py     google_news_feed + filter_today + Candidate
     fetch.py         article body fetcher (trafilatura)
-  render/
-    dashboard.py     render(rows, date) -> bytes + CLI shim
-    report.py        render(rows, date) -> bytes + CLI shim
+web/                 Vite + React frontend (charts, candle, summaries)
 migrations/          SQL files, applied in lexical order
 scripts/
   migrate.py         apply migrations/*.sql idempotently

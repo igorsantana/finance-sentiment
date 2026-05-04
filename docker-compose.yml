@@ -26,6 +26,9 @@ services:
       JUDGE_NAME: ${JUDGE_NAME:-}
       TZ: America/Sao_Paulo
       HF_HOME: /hf_cache
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      LLM_MODEL: ${LLM_MODEL:-llama-3.3-70b-versatile}
+      LLM_API_KEY: ${LLM_API_KEY:-}
     volumes:
       - .:/app
       - hf_cache:/hf_cache
@@ -42,6 +45,9 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
+      - --reload
+      - --reload-dir
+      - /app/finance_news
 
   cron:
     image: finance_news:latest
@@ -52,6 +58,9 @@ services:
       WORKERS: ${WORKERS:-4}
       TZ: America/Sao_Paulo
       HF_HOME: /hf_cache
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      LLM_MODEL: ${LLM_MODEL:-llama-3.3-70b-versatile}
+      LLM_API_KEY: ${LLM_API_KEY:-}
     volumes:
       - .:/app
       - hf_cache:/hf_cache

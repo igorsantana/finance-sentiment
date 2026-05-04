@@ -1,4 +1,4 @@
-"""Pipeline orchestration: ingest, extract, render, and run-bookkeeping.
+"""Pipeline orchestration: ingest, extract, summarize, and run-bookkeeping.
 
 Functions here are pure orchestrators — they update the ``runs`` table around
 each invocation and re-raise on failure. The CLI dispatcher at the bottom is
@@ -114,37 +114,26 @@ def run_extract(
     )
 
 
-def _render_daily_artifacts(
-    day: date, progress: Optional[ProgressFn] = None
-) -> None:
-    """Render dashboard + report PNGs into ``data/images/<day>/``.
-
-    Failures are logged but don't fail the parent ``full`` run — a missed
-    image is recoverable; the data is still in the DB.
-    """
-    from pathlib import Path
-    from finance_news.render import dashboard, report
-
-    out_dir = Path(__file__).resolve().parent.parent / "data" / "images" / day.isoformat()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    rows = dashboard.load_rows(day)
-    if not rows:
-        log.info("No articles for %s — skipping render.", day.isoformat())
-        if progress:
-            progress("render", 0, 0)
-        return
-    if progress:
-        progress("render", 0, 2)
+def run_summarize(
+    target_date: Optional[date] = None,
+    progress: Optional[ProgressFn] = None,
+    setup_logging: bool = True,
+) -> RunSummary:
+    if setup_logging:
+        _setup_logging()
+    day = target_date or datetime.now(SP_TZ).date()
+    run_id, started = _start("summarize")
     try:
-        (out_dir / "dashboard.png").write_bytes(dashboard.render(rows, day))
-        if progress:
-            progress("render", 1, 2)
-        (out_dir / "report.png").write_bytes(report.render(rows, day))
-        if progress:
-            progress("render", 2, 2)
+        from finance_news import summaries
+        summaries.run_summaries(day, progress=progress)
     except Exception as e:
-        log.warning("render failed: %s", e)
+        _finish(run_id, status="error", error=repr(e))
+        raise
+    _finish(run_id, status="ok")
+    return RunSummary(
+        kind="summarize", run_id=run_id, started_at=started,
+        finished_at=datetime.now(timezone.utc), status="ok",
+    )
 
 
 def run_full(
@@ -152,10 +141,11 @@ def run_full(
     progress: Optional[ProgressFn] = None,
     setup_logging: bool = True,
 ) -> RunSummary:
-    """Ingest, then extract, then render daily artifacts.
+    """Ingest, then extract, then summarize.
 
     Records a single ``full`` run in the ``runs`` table; the per-stage runs
-    recorded by ``run_ingest`` / ``run_extract`` provide finer detail.
+    recorded by ``run_ingest`` / ``run_extract`` / ``run_summarize`` provide
+    finer detail.
     """
     if setup_logging:
         _setup_logging()
@@ -165,7 +155,7 @@ def run_full(
     try:
         children.append(run_ingest(target_date=day, progress=progress, setup_logging=False))
         children.append(run_extract(target_date=day, progress=progress, setup_logging=False))
-        _render_daily_artifacts(day, progress=progress)
+        children.append(run_summarize(target_date=day, progress=progress, setup_logging=False))
     except Exception as e:
         _finish(run_id, status="error", error=repr(e))
         raise
@@ -209,7 +199,7 @@ def pipeline_status() -> dict[str, Any]:
 
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="python -m finance_news.pipeline")
-    p.add_argument("subcommand", choices=("ingest", "extract", "run", "status"))
+    p.add_argument("subcommand", choices=("ingest", "extract", "summarize", "run", "status"))
     p.add_argument("--date", help="ISO date (YYYY-MM-DD); default = today in BRT.")
     args = p.parse_args(argv)
     target_date = date.fromisoformat(args.date) if args.date else None
@@ -218,6 +208,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         run_ingest(target_date=target_date)
     elif args.subcommand == "extract":
         run_extract(target_date=target_date)
+    elif args.subcommand == "summarize":
+        run_summarize(target_date=target_date)
     elif args.subcommand == "run":
         run_full(target_date=target_date)
     elif args.subcommand == "status":

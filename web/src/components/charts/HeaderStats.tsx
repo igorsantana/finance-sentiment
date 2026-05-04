@@ -1,5 +1,6 @@
 import type { ReportPayload } from "../../api";
 import { ChartCard } from "./ChartCard";
+import { formatPtBr } from "../../lib/date";
 
 type Tile = {
   label: string;
@@ -30,7 +31,7 @@ export function HeaderStats({ data }: { data: ReportPayload }) {
   ];
 
   return (
-    <ChartCard title="Resumo" subtitle={data.date} className="lg:col-span-1">
+    <ChartCard title="Resumo" subtitle={formatPtBr(data.date)} className="lg:col-span-1">
       <div className="grid grid-cols-2 gap-3">
         {tiles.map((t) => (
           <div
