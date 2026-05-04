@@ -1,6 +1,6 @@
 """Eager per-(company, day) good/bad-points summarization step.
 
-Sits between ``extract`` and ``render`` in the daily pipeline. For each of
+Runs after ``extract`` in the daily pipeline. For each of
 the day's top-N most-mentioned companies, gathers the matching articles
 and asks the local LLM (Stage 2's ``llm_summary``) for a strict-JSON
 good/bad bullet list, then upserts into ``company_day_summaries``.

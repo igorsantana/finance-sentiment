@@ -26,18 +26,17 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
-from pathlib import Path
 from typing import Any, Iterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from finance_news.aggregations import build_report_payload
 from finance_news.nlp.companies import load_companies_from_db
 from finance_news.pipeline import run_full, run_ingest, run_extract, run_summarize
+from finance_news.stocks import fetch_ohlc_window
 from finance_news.store import db
 
 app = FastAPI(title="Finance News")
@@ -48,12 +47,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Mount static files for generated images and artifacts
-data_dir = Path(__file__).resolve().parent.parent / "data"
-data_dir.mkdir(exist_ok=True)
-app.mount("/data", StaticFiles(directory=str(data_dir)), name="data")
-
 
 @dataclass
 class RunChannel:
@@ -271,14 +264,7 @@ def _wait_events(ch: RunChannel, idx: int, timeout: float) -> tuple[list[dict[st
 
 @app.get("/api/dates")
 def list_dates() -> dict[str, list[str]]:
-    """Return the dates with articles + the dates with rendered output.
-
-    ``processed`` is derived from the filesystem (``data/images/<date>/``) —
-    that's what the UI actually wants to surface, and it survives runs that
-    were performed via separate ingest/extract steps without a ``full`` row
-    in the ``runs`` table.
-    All dates are reported in America/Sao_Paulo to match the cron schedule.
-    """
+    """Dates that have at least one article (in America/Sao_Paulo)."""
     with db.connect() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -289,22 +275,7 @@ def list_dates() -> dict[str, list[str]]:
             """
         )
         with_articles = [r["d"].isoformat() for r in cur.fetchall()]
-
-    images_dir = data_dir / "images"
-    image_dates: list[str] = []
-    if images_dir.is_dir():
-        for child in sorted(images_dir.iterdir()):
-            if not child.is_dir():
-                continue
-            if not (child / "dashboard.png").exists() and not (child / "report.png").exists():
-                continue
-            try:
-                date.fromisoformat(child.name)
-            except ValueError:
-                continue
-            image_dates.append(child.name)
-    processed = sorted(set(image_dates) | set(with_articles))
-    return {"processed": processed, "with_articles": with_articles}
+    return {"with_articles": with_articles}
 
 
 @app.get("/api/reports/{report_date}")
@@ -324,6 +295,145 @@ def get_report(report_date: str) -> dict[str, Any]:
     payload = build_report_payload(rows, sectors_lookup)
     payload["date"] = day.isoformat()
     return payload
+
+
+@app.get("/api/companies/{ticker_root}/summary/{summary_date}")
+def get_company_summary(ticker_root: str, summary_date: str) -> dict[str, Any]:
+    try:
+        day = date.fromisoformat(summary_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid date")
+    root = ticker_root.upper()
+    with db.connect() as conn:
+        row = db.fetch_company_summary(conn, ticker_root=root, summary_date=day)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no summary for ticker/date")
+        articles = db.fetch_articles_for_company(conn, ticker_root=root, day=day)
+    name = next(
+        (c.get("short_name") for c in load_companies_from_db() if c["ticker_root"] == root),
+        None,
+    )
+    return {
+        "ticker": root,
+        "name": name,
+        "date": day.isoformat(),
+        "good": list(row.get("good_points") or []),
+        "bad": list(row.get("bad_points") or []),
+        "articleCount": row.get("article_count"),
+        "model": row.get("model"),
+        "articles": [
+            {
+                "url": a.get("url"),
+                "title": a.get("title"),
+                "site": a.get("site"),
+                "sentiment": a.get("sentiment"),
+                "sentimentScore": (
+                    float(a["sentiment_score"]) if a.get("sentiment_score") is not None else None
+                ),
+            }
+            for a in articles[:10]
+        ],
+    }
+
+
+@app.get("/api/companies/{ticker_root}/sentiment-series/{series_date}")
+def get_sentiment_series(ticker_root: str, series_date: str) -> dict[str, Any]:
+    """Per-day sentiment + close price for ±10 trading days around the date,
+    plus a Pearson correlation of close vs net sentiment over overlapping days."""
+    try:
+        day = date.fromisoformat(series_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid date")
+    root = ticker_root.upper()
+    with db.connect() as conn:
+        bars = fetch_ohlc_window(conn, root, day)
+        if not bars:
+            return {
+                "ticker": root,
+                "selectedDate": day.isoformat(),
+                "points": [],
+                "correlation": None,
+            }
+        start = bars[0]["bar_date"]
+        end = bars[-1]["bar_date"]
+        sentiment_rows = db.fetch_sentiment_series(
+            conn, ticker_root=root, start=start, end=end
+        )
+
+    by_day = {r["day"]: r for r in sentiment_rows}
+    points: list[dict[str, Any]] = []
+    closes: list[float] = []
+    nets: list[float] = []
+    for b in bars:
+        bd = b["bar_date"]
+        s = by_day.get(bd)
+        pos = int(s["positive"]) if s else 0
+        neu = int(s["neutral"]) if s else 0
+        neg = int(s["negative"]) if s else 0
+        total = pos + neu + neg
+        net = (pos - neg) / total if total else 0.0
+        avg_score = float(s["avg_score"]) if s and s.get("avg_score") is not None else None
+        close = float(b["close"])
+        if total > 0:
+            closes.append(close)
+            nets.append(net)
+        points.append({
+            "date": bd.isoformat(),
+            "close": close,
+            "positive": pos,
+            "neutral": neu,
+            "negative": neg,
+            "total": total,
+            "net": net,
+            "avgScore": avg_score,
+        })
+
+    return {
+        "ticker": root,
+        "selectedDate": day.isoformat(),
+        "points": points,
+        "correlation": _pearson(closes, nets),
+    }
+
+
+def _pearson(xs: list[float], ys: list[float]) -> float | None:
+    n = len(xs)
+    if n < 2:
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    dx2 = sum((x - mx) ** 2 for x in xs)
+    dy2 = sum((y - my) ** 2 for y in ys)
+    if dx2 == 0 or dy2 == 0:
+        return None
+    return num / (dx2**0.5 * dy2**0.5)
+
+
+@app.get("/api/stocks/{ticker_root}/ohlc/{ohlc_date}")
+def get_stock_ohlc(ticker_root: str, ohlc_date: str) -> dict[str, Any]:
+    try:
+        day = date.fromisoformat(ohlc_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid date")
+    root = ticker_root.upper()
+    with db.connect() as conn:
+        bars = fetch_ohlc_window(conn, root, day)
+    return {
+        "ticker": root,
+        "selectedDate": day.isoformat(),
+        "bars": [
+            {
+                "date": b["bar_date"].isoformat(),
+                "open": float(b["open"]),
+                "high": float(b["high"]),
+                "low": float(b["low"]),
+                "close": float(b["close"]),
+                "volume": b.get("volume"),
+            }
+            for b in bars
+        ],
+    }
 
 
 @app.get("/api/health")

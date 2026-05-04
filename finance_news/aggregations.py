@@ -1,15 +1,9 @@
-"""Shared aggregations consumed by both the PNG renderer and the HTTP API.
+"""Shared aggregations consumed by the HTTP API.
 
-Two row shapes flow in:
-
-- The CSV-style dict produced by ``finance_news.render.dashboard.load_rows`` —
-  pipe-joined strings for ``matched_companies``, ``sectors``, etc. ``_tilt``,
-  ``_parse_pipe``, ``build_company_df`` and ``build_sector_df`` operate on
-  this shape (kept here so ``finance_news.render.report`` keeps working
-  byte-for-byte).
-- Raw psycopg dict rows from ``db.fetch_articles_for_date``. ``build_report_payload``
-  consumes those plus a ``sectors_lookup`` mapping ticker_root → company info,
-  and produces the ``ReportPayload`` dict consumed by ``GET /api/reports/<date>``.
+``build_report_payload`` consumes raw psycopg dict rows from
+``db.fetch_articles_for_date`` plus a ``sectors_lookup`` mapping
+ticker_root → company info, and produces the ``ReportPayload`` dict
+consumed by ``GET /api/reports/<date>``.
 """
 from __future__ import annotations
 
@@ -23,44 +17,8 @@ SP_TZ = ZoneInfo("America/Sao_Paulo")
 SENTIMENT_KEYS = ("positive", "neutral", "negative")
 
 
-def _parse_pipe(s: str) -> list[str]:
-    return [x.strip() for x in (s or "").split("|") if x.strip()]
-
-
 def _tilt(pos: int, neg: int, total: int) -> float:
     return (pos - neg) / max(total, 1)
-
-
-def build_company_df(rows: list[dict]) -> dict:
-    counts: dict[str, Counter] = defaultdict(Counter)
-    articles: dict[str, list[dict]] = defaultdict(list)
-    use_matched = any(r.get("matched_companies") for r in rows)
-    field = "matched_companies" if use_matched else "companies"
-    for r in rows:
-        companies = _parse_pipe(r.get(field) or "")
-        sent = r.get("sentiment", "")
-        if not companies or not sent:
-            continue
-        for c in companies:
-            counts[c][sent] += 1
-            articles[c].append(r)
-    return {"counts": counts, "articles": articles}
-
-
-def build_sector_df(rows: list[dict]) -> dict:
-    counts: dict[str, Counter] = defaultdict(Counter)
-    companies: dict[str, Counter] = defaultdict(Counter)
-    for r in rows:
-        sectors = _parse_pipe(r.get("sectors") or "")
-        co_names = _parse_pipe(r.get("matched_companies") or r.get("companies") or "")
-        sent = r.get("sentiment", "")
-        if not sectors or not sent:
-            continue
-        for s in sectors:
-            counts[s][sent] += 1
-            for c in co_names:
-                companies[s][c] += 1
-    return {"counts": counts, "companies": companies}
 
 
 def build_report_payload(

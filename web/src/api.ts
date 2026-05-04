@@ -1,5 +1,4 @@
 export type DatesPayload = {
-  processed: string[];
   with_articles: string[];
 };
 
@@ -13,7 +12,7 @@ export type StreamEvent =
     }
   | {
       type: "progress";
-      stage: "ingest" | "extract" | "render" | string;
+      stage: "ingest" | "extract" | "summarize" | string;
       current: number;
       total: number;
     }
@@ -69,6 +68,93 @@ export async function getReport(
   const r = await fetch(`/api/reports/${encodeURIComponent(date)}`, { signal });
   if (r.status === 404) return null;
   if (!r.ok) throw new Error(`GET /api/reports/${date} → ${r.status}`);
+  return r.json();
+}
+
+export type CompanySummary = {
+  ticker: string;
+  name: string | null;
+  date: string;
+  good: string[];
+  bad: string[];
+  articleCount: number;
+  model: string;
+  articles: Array<{
+    url: string;
+    title: string | null;
+    site: string | null;
+    sentiment: string | null;
+    sentimentScore: number | null;
+  }>;
+};
+
+export type StockOhlc = {
+  ticker: string;
+  selectedDate: string;
+  bars: Array<{
+    date: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number | null;
+  }>;
+};
+
+export type SentimentSeries = {
+  ticker: string;
+  selectedDate: string;
+  points: Array<{
+    date: string;
+    close: number;
+    positive: number;
+    neutral: number;
+    negative: number;
+    total: number;
+    net: number;
+    avgScore: number | null;
+  }>;
+  correlation: number | null;
+};
+
+export async function getSentimentSeries(
+  ticker: string,
+  date: string,
+  signal?: AbortSignal,
+): Promise<SentimentSeries> {
+  const r = await fetch(
+    `/api/companies/${encodeURIComponent(ticker)}/sentiment-series/${encodeURIComponent(date)}`,
+    { signal },
+  );
+  if (!r.ok)
+    throw new Error(`GET /api/companies/${ticker}/sentiment-series/${date} → ${r.status}`);
+  return r.json();
+}
+
+export async function getCompanySummary(
+  ticker: string,
+  date: string,
+  signal?: AbortSignal,
+): Promise<CompanySummary | null> {
+  const r = await fetch(
+    `/api/companies/${encodeURIComponent(ticker)}/summary/${encodeURIComponent(date)}`,
+    { signal },
+  );
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GET /api/companies/${ticker}/summary/${date} → ${r.status}`);
+  return r.json();
+}
+
+export async function getStockOhlc(
+  ticker: string,
+  date: string,
+  signal?: AbortSignal,
+): Promise<StockOhlc> {
+  const r = await fetch(
+    `/api/stocks/${encodeURIComponent(ticker)}/ohlc/${encodeURIComponent(date)}`,
+    { signal },
+  );
+  if (!r.ok) throw new Error(`GET /api/stocks/${ticker}/ohlc/${date} → ${r.status}`);
   return r.json();
 }
 

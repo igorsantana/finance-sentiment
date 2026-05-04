@@ -45,6 +45,9 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
+      - --reload
+      - --reload-dir
+      - /app/finance_news
 
   cron:
     image: finance_news:latest

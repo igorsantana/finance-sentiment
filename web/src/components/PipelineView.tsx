@@ -42,6 +42,7 @@ export function PipelineView({
             </span>
             <input
               type="date"
+              lang="pt-BR"
               value={runDate}
               onChange={(e) => onRunDateChange(e.target.value)}
               disabled={running}

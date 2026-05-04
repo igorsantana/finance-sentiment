@@ -3,7 +3,7 @@ import type { StageProgress } from "../hooks/useRunStream";
 const STAGES = [
   { id: "ingest", label: "Buscar", icon: "🔍" },
   { id: "extract", label: "Extrair", icon: "⚡" },
-  { id: "render", label: "Render", icon: "🎨" },
+  { id: "summarize", label: "Resumir", icon: "📝" },
 ];
 
 export type TopBarProps = {

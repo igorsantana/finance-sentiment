@@ -222,6 +222,39 @@ def fetch_articles_for_company(
         return cur.fetchall()
 
 
+def fetch_sentiment_series(
+    conn: psycopg.Connection,
+    *,
+    ticker_root: str,
+    start: date,
+    end: date,
+) -> list[dict[str, Any]]:
+    """Per-day sentiment counts + average score for one company over a window.
+
+    Aggregates articles where ``ticker_root`` is in ``matched_tickers`` and
+    ``published_at`` (in São Paulo) falls in ``[start, end]``. Returns one
+    row per day that has at least one article.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                (published_at AT TIME ZONE 'America/Sao_Paulo')::date AS day,
+                SUM((sentiment = 'positive')::int) AS positive,
+                SUM((sentiment = 'neutral')::int)  AS neutral,
+                SUM((sentiment = 'negative')::int) AS negative,
+                AVG(sentiment_score)               AS avg_score
+            FROM articles
+            WHERE %s = ANY(matched_tickers)
+              AND (published_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN %s AND %s
+            GROUP BY day
+            ORDER BY day
+            """,
+            (ticker_root, start, end),
+        )
+        return cur.fetchall()
+
+
 # ---------- company day summaries ----------
 
 def upsert_company_summary(

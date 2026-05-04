@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { PipelineView } from "./components/PipelineView";
 import { ReportView, type ViewMode } from "./components/ReportView";
 import { Sidebar, type Section } from "./components/Sidebar";
@@ -17,15 +17,11 @@ function todayInSP(): string {
 }
 
 export default function App() {
-  const [dates, setDates] = useState<DatesPayload>({
-    processed: [],
-    with_articles: [],
-  });
+  const [dates, setDates] = useState<DatesPayload>({ with_articles: [] });
   const [section, setSection] = useState<Section>("pipeline");
   const [reportDate, setReportDate] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("images");
+  const [viewMode, setViewMode] = useState<ViewMode>("charts");
   const [runDate, setRunDate] = useState<string>(() => todayInSP());
-  const [imageBust, setImageBust] = useState<string>("");
 
   const refreshDates = () =>
     getDates().then(setDates).catch((e) => console.error(e));
@@ -34,8 +30,6 @@ export default function App() {
     onSettled: (outcome) => {
       if (outcome === "ok") {
         refreshDates();
-        // Bump cache-buster so ImagesPanel re-fetches the freshly-rendered PNGs.
-        setImageBust(String(Date.now()));
       }
     },
     onReattach: (active) => {
@@ -49,15 +43,6 @@ export default function App() {
   useEffect(() => {
     refreshDates();
   }, []);
-
-  const processedSet = useMemo(
-    () => new Set(dates.processed),
-    [dates.processed],
-  );
-  const articleSet = useMemo(
-    () => new Set(dates.with_articles),
-    [dates.with_articles],
-  );
 
   const canRun = !running && /^\d{4}-\d{2}-\d{2}$/.test(runDate);
 
@@ -76,7 +61,7 @@ export default function App() {
       <Sidebar
         section={section}
         reportDate={reportDate}
-        processedDates={dates.processed}
+        reportDates={dates.with_articles}
         onSelectPipeline={() => setSection("pipeline")}
         onSelectReport={handleSelectReport}
       />
@@ -98,9 +83,6 @@ export default function App() {
           ) : (
             <ReportView
               date={reportDate}
-              processed={!!reportDate && processedSet.has(reportDate)}
-              hasArticles={!!reportDate && articleSet.has(reportDate)}
-              imageBust={imageBust}
               viewMode={viewMode}
               onViewModeChange={setViewMode}
             />

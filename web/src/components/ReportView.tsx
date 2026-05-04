@@ -1,27 +1,22 @@
 import { ChartsPanel } from "./ChartsPanel";
-import { ImagesPanel } from "./ImagesPanel";
+import { CompanyPanel } from "./CompanyPanel";
+import { formatPtBr } from "../lib/date";
 
-export type ViewMode = "images" | "charts";
+export type ViewMode = "charts" | "company";
 
 export type ReportViewProps = {
   date: string | null;
-  processed: boolean;
-  hasArticles: boolean;
-  imageBust: string;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
 };
 
 const TOGGLE_OPTIONS: { id: ViewMode; label: string }[] = [
-  { id: "images", label: "Imagens" },
   { id: "charts", label: "Gráficos" },
+  { id: "company", label: "Empresa" },
 ];
 
 export function ReportView({
   date,
-  processed,
-  hasArticles,
-  imageBust,
   viewMode,
   onViewModeChange,
 }: ReportViewProps) {
@@ -32,7 +27,7 @@ export function ReportView({
           <h2 className="font-mono uppercase tracking-[0.25em] text-xs text-muted-foreground mb-1">
             Relatório
           </h2>
-          <p className="text-2xl font-semibold font-mono">{date ?? "—"}</p>
+          <p className="text-2xl font-semibold font-mono">{formatPtBr(date)}</p>
         </div>
 
         <div
@@ -61,15 +56,10 @@ export function ReportView({
         </div>
       </div>
 
-      {viewMode === "images" ? (
-        <ImagesPanel
-          date={date}
-          processed={processed}
-          hasArticles={hasArticles}
-          imageBust={imageBust}
-        />
-      ) : (
+      {viewMode === "charts" ? (
         <ChartsPanel date={date} />
+      ) : (
+        <CompanyPanel date={date} />
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-.PHONY: help build up down nuke logs ps migrate psql db-reset companies ingest extract full dashboard report judge judge-stats shell status
+.PHONY: help build up down nuke logs ps migrate psql db-reset companies ingest extract full judge judge-stats shell status dev
 
 COMPOSE  := docker compose
 EXEC     := $(COMPOSE) exec -T app
@@ -46,14 +46,8 @@ ingest: ## Fetch fresh articles into the DB
 extract: ## Run sentiment extraction on pending articles
 	$(EXEC) python -m finance_news.pipeline extract
 
-full: ## ingest + extract + render
+full: ## ingest + extract + summarize
 	$(EXEC) python -m finance_news.pipeline run
-
-dashboard: ## Render today's dashboard PNG
-	$(EXEC) python -m finance_news.render.dashboard
-
-report: ## Render today's report PNG
-	$(EXEC) python -m finance_news.render.report
 
 judge: ## Open the judging TUI (interactive)
 	$(EXEC_TTY) python scripts/judging/cli.py
@@ -72,3 +66,9 @@ api-logs: ## Tail just the API (uvicorn) logs
 
 web: ## Run the Vite dev server (host-side, proxies /api → :8000)
 	cd web && npm install && npm run dev
+
+dev: ## Live-reload backend (uvicorn --reload) + frontend (vite). Ctrl-C stops both.
+	@trap 'kill 0 2>/dev/null; $(COMPOSE) stop app db cron 2>/dev/null' EXIT INT TERM; \
+	$(COMPOSE) up app db cron & \
+	(cd web && npm install --silent && npm run dev) & \
+	wait
