@@ -222,6 +222,30 @@ def fetch_articles_for_company(
         return cur.fetchall()
 
 
+def clear_matched_tickers(
+    conn: psycopg.Connection,
+    *,
+    url: str,
+    conflicts: list[str],
+) -> None:
+    """Backfill-only: empty ``matched_tickers`` and overwrite ``conflicts``.
+
+    Leaves ``sentiment``, ``subjects``, ``companies_ner``, ``persons``, etc.
+    untouched. Kept separate from ``update_extraction`` so a column-list
+    drift cannot accidentally clobber sentiment data during backfills.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE articles
+            SET matched_tickers = ARRAY[]::text[],
+                conflicts       = %s
+            WHERE url = %s
+            """,
+            (conflicts, url),
+        )
+
+
 def fetch_sentiment_series(
     conn: psycopg.Connection,
     *,
