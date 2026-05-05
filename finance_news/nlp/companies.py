@@ -95,9 +95,9 @@ _ALIAS_STOPLIST = {
 _MIN_ALIAS_LEN = 3
 
 
-# Normalized aliases that collide with everyday PT-BR words. When the matcher
-# sees one of these, it requires contextual evidence (ticker in text, or the
-# alias falling inside a spaCy ORG span) before accepting the match.
+# Normalized aliases that collide with everyday PT-BR words or proper nouns
+# (cities, given names). Hits on these are graded by ``_alias_context_score``
+# against the surrounding window before being accepted.
 _AMBIGUOUS_ALIASES = {
     "vale",         # verb valer / noun vale (coupon, valley)
     "rumo",         # noun rumo (direction)
@@ -107,8 +107,59 @@ _AMBIGUOUS_ALIASES = {
     "equatorial",   # adjective ("zona equatorial", "Guiné Equatorial")
     "minerva",      # mythological name, also generic surname
     "anima",        # archaic noun "ânima" (soul)
+    "suzano",       # also a city in São Paulo (Suzano-SP)
     "natura", "localiza", "raia", "vibra", "ultra", "cielo", "cogna",
 }
+
+# Window-level cues for the context gate. Normalized form: lowercase,
+# accent-stripped, punctuation preserved. Lists are precision-first — a real
+# finance article almost always carries at least one of these tokens within
+# 200 chars of the company alias.
+_FINANCE_CONTEXT = (
+    "s.a.", "acao", "acoes", "empresa", "companhia", "cotacao", "cotacoes",
+    "bovespa", "b3", "ibovespa", "cvm", "balanco", "trimestre", "lucro",
+    "prejuizo", "receita", "ebitda", "papel", "papeis", "investidor",
+    "investidores", "acionista", "acionistas", "ipo", "dividendo",
+    "dividendos", "guidance", "fato relevante", "ri ",
+)
+_PLACE_CONTEXT = (
+    "cidade", "municipio", "prefeitura", "prefeito", "bairro",
+    "rua ", "avenida ", "regiao metropolitana", "morador", "moradores",
+    "interior de", "zona norte", "zona sul", "zona leste", "zona oeste",
+    "estado de sao paulo",
+)
+_CONTEXT_WINDOW = 200       # chars on each side of the alias match
+_CONTEXT_THRESHOLD = 1      # min score to accept an ambiguous match
+
+
+def _alias_context_score(
+    *,
+    text: str,
+    normalized: str,
+    match_start: int,
+    match_end: int,
+    alias: str,
+    ticker_re: Optional[re.Pattern],
+    org_texts: set[str],
+) -> int:
+    """Grade an ambiguous alias hit against its surrounding context.
+
+    Strong evidence (ticker code anywhere in the article, or alias inside a
+    spaCy ORG span) tips the score positive on its own; window-level
+    finance/place vocabulary refines borderline cases (e.g., a Suzano
+    article that mentions the city but no business signals).
+    """
+    score = 0
+    if ticker_re is not None and ticker_re.search(text):
+        score += 4
+    if any(alias in o for o in org_texts):
+        score += 3
+    lo = max(0, match_start - _CONTEXT_WINDOW)
+    hi = min(len(normalized), match_end + _CONTEXT_WINDOW)
+    window = normalized[lo:hi]
+    score += sum(1 for term in _FINANCE_CONTEXT if term in window)
+    score -= 2 * sum(1 for term in _PLACE_CONTEXT if term in window)
+    return score
 
 
 def _norm_org_set(doc) -> set[str]:
@@ -184,10 +235,17 @@ class CompanyMatcher:
             aliases.append(c.long_name)
         return aliases
 
-    def match(self, text: str, doc=None) -> list[Company]:
+    def match(
+        self,
+        text: str,
+        doc=None,
+        *,
+        org_texts: Optional[set[str]] = None,
+    ) -> list[Company]:
         if not text:
             return []
-        org_texts = _norm_org_set(doc)
+        if org_texts is None:
+            org_texts = _norm_org_set(doc)
         found_roots: list[str] = []
         seen: set[str] = set()
 
@@ -200,10 +258,16 @@ class CompanyMatcher:
                 if not root or root in seen:
                     continue
                 if alias in _AMBIGUOUS_ALIASES:
-                    ticker_re = self._ticker_re_by_root.get(root)
-                    has_ticker = bool(ticker_re and ticker_re.search(text))
-                    in_org = any(alias in o for o in org_texts)
-                    if not (has_ticker or in_org):
+                    score = _alias_context_score(
+                        text=text,
+                        normalized=normalized,
+                        match_start=m.start(1),
+                        match_end=m.end(1),
+                        alias=alias,
+                        ticker_re=self._ticker_re_by_root.get(root),
+                        org_texts=org_texts,
+                    )
+                    if score < _CONTEXT_THRESHOLD:
                         continue
                 seen.add(root)
                 found_roots.append(root)

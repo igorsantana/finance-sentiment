@@ -1,6 +1,6 @@
 import { ChartsPanel } from "./ChartsPanel";
 import { CompanyPanel } from "./CompanyPanel";
-import { formatPtBr } from "../lib/date";
+import { formatPtBr } from "../../lib/date";
 
 export type ViewMode = "charts" | "company";
 

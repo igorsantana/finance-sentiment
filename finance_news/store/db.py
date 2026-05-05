@@ -222,6 +222,163 @@ def fetch_articles_for_company(
         return cur.fetchall()
 
 
+def clear_matched_tickers(
+    conn: psycopg.Connection,
+    *,
+    url: str,
+    conflicts: list[str],
+) -> None:
+    """Backfill-only: empty ``matched_tickers`` and overwrite ``conflicts``.
+
+    Leaves ``sentiment``, ``subjects``, ``companies_ner``, ``persons``, etc.
+    untouched. Kept separate from ``update_extraction`` so a column-list
+    drift cannot accidentally clobber sentiment data during backfills.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE articles
+            SET matched_tickers = ARRAY[]::text[],
+                conflicts       = %s
+            WHERE url = %s
+            """,
+            (conflicts, url),
+        )
+
+
+def fetch_articles_in_window(
+    conn: psycopg.Connection,
+    *,
+    start: date,
+    end: date,
+    ticker_root: Optional[str] = None,
+    ticker_roots: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
+    """Articles published in ``[start, end]`` (SP-inclusive), most recent first.
+
+    ``ticker_root`` filters to a single ticker; ``ticker_roots`` filters to any
+    of the given tickers (array overlap). The two are mutually exclusive;
+    ``ticker_root`` takes precedence.
+    """
+    sql = [
+        "SELECT * FROM articles",
+        "WHERE (published_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN %s AND %s",
+    ]
+    params: list[Any] = [start, end]
+    if ticker_root:
+        sql.append("AND %s = ANY(matched_tickers)")
+        params.append(ticker_root)
+    elif ticker_roots:
+        sql.append("AND matched_tickers && %s::text[]")
+        params.append(ticker_roots)
+    sql.append("ORDER BY published_at DESC")
+    with conn.cursor() as cur:
+        cur.execute("\n".join(sql), params)
+        return cur.fetchall()
+
+
+def fetch_daily_sentiment_window(
+    conn: psycopg.Connection,
+    *,
+    start: date,
+    end: date,
+    ticker_root: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Per-day sentiment counts + average score across ``[start, end]``.
+
+    Same shape as ``fetch_sentiment_series`` but parameterized by window
+    endpoints and with an optional ticker filter for per-company views.
+    Returns one row per SP-day that has at least one article.
+    """
+    where = [
+        "(published_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN %s AND %s",
+    ]
+    params: list[Any] = [start, end]
+    if ticker_root:
+        where.append("%s = ANY(matched_tickers)")
+        params.append(ticker_root)
+    sql = f"""
+        SELECT
+            (published_at AT TIME ZONE 'America/Sao_Paulo')::date AS day,
+            SUM((sentiment = 'positive')::int) AS positive,
+            SUM((sentiment = 'neutral')::int)  AS neutral,
+            SUM((sentiment = 'negative')::int) AS negative,
+            AVG(sentiment_score)               AS avg_score
+        FROM articles
+        WHERE {' AND '.join(where)}
+        GROUP BY day
+        ORDER BY day
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def latest_article_date(conn: psycopg.Connection) -> Optional[date]:
+    """Most recent SP-day that has at least one article. Powers default
+    ``end_date`` for the trends/advisor endpoints."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MAX((published_at AT TIME ZONE 'America/Sao_Paulo')::date) AS d
+            FROM articles
+            WHERE published_at IS NOT NULL
+            """
+        )
+        row = cur.fetchone()
+    return row["d"] if row else None
+
+
+# ---------- advisor narratives ----------
+
+def upsert_advisor_narrative(
+    conn: psycopg.Connection,
+    *,
+    window_days: int,
+    end_date: date,
+    ticker_root: str,
+    paragraphs: list[str],
+    article_count: int,
+    model: str,
+) -> None:
+    """Cache an LLM advisor narrative. ``ticker_root=''`` = market-wide."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO advisor_narratives
+                (window_days, end_date, ticker_root, paragraphs,
+                 article_count, model)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (window_days, end_date, ticker_root) DO UPDATE SET
+                paragraphs    = EXCLUDED.paragraphs,
+                article_count = EXCLUDED.article_count,
+                model         = EXCLUDED.model,
+                created_at    = now()
+            """,
+            (window_days, end_date, ticker_root, paragraphs,
+             article_count, model),
+        )
+
+
+def fetch_advisor_narrative(
+    conn: psycopg.Connection,
+    *,
+    window_days: int,
+    end_date: date,
+    ticker_root: str,
+) -> Optional[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT *
+            FROM advisor_narratives
+            WHERE window_days = %s AND end_date = %s AND ticker_root = %s
+            """,
+            (window_days, end_date, ticker_root),
+        )
+        return cur.fetchone()
+
+
 def fetch_sentiment_series(
     conn: psycopg.Connection,
     *,

@@ -21,22 +21,25 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Iterator
+
+import requests as _requests
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from finance_news.aggregations import build_report_payload
+from finance_news.aggregations import build_report_payload, build_window_payload
 from finance_news.nlp.companies import load_companies_from_db
 from finance_news.pipeline import run_full, run_ingest, run_extract, run_summarize
-from finance_news.stocks import fetch_ohlc_window
+from finance_news.stocks import fetch_ohlc_trailing, fetch_ohlc_window
 from finance_news.store import db
 
 app = FastAPI(title="Finance News")
@@ -297,6 +300,251 @@ def get_report(report_date: str) -> dict[str, Any]:
     return payload
 
 
+_WINDOW_OPTIONS = (3, 7, 14)
+
+
+def _resolve_window(window: int, end: str | None) -> tuple[date, date, int]:
+    if window not in _WINDOW_OPTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"window must be one of {list(_WINDOW_OPTIONS)}",
+        )
+    if end is None:
+        with db.connect() as conn:
+            end_date = db.latest_article_date(conn)
+        if end_date is None:
+            raise HTTPException(status_code=404, detail="no articles in DB")
+    else:
+        try:
+            end_date = date.fromisoformat(end)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid end date")
+    start_date = end_date - timedelta(days=window - 1)
+    return start_date, end_date, window
+
+
+@app.get("/api/trends/overall")
+def get_trends_overall(
+    window: int = 7,
+    end: str | None = None,
+    tickers: str | None = None,
+) -> dict[str, Any]:
+    start_date, end_date, days = _resolve_window(window, end)
+    ticker_list = (
+        [t.strip().upper() for t in tickers.split(",") if t.strip()]
+        if tickers
+        else None
+    )
+    with db.connect() as conn:
+        rows = db.fetch_articles_in_window(
+            conn, start=start_date, end=end_date, ticker_roots=ticker_list or None
+        )
+    if not rows:
+        raise HTTPException(status_code=404, detail="no articles in window")
+    sectors_lookup = {
+        c["ticker_root"]: {"short_name": c.get("short_name"), "sector": c.get("sector")}
+        for c in load_companies_from_db()
+    }
+    return build_window_payload(rows, sectors_lookup, start=start_date, end=end_date)
+
+
+@app.get("/api/trends/company/{ticker_root}")
+def get_trends_company(
+    ticker_root: str,
+    window: int = 7,
+    end: str | None = None,
+) -> dict[str, Any]:
+    start_date, end_date, days = _resolve_window(window, end)
+    root = ticker_root.upper()
+    name = next(
+        (c.get("short_name") for c in load_companies_from_db() if c["ticker_root"] == root),
+        None,
+    )
+    if name is None:
+        raise HTTPException(status_code=404, detail="unknown ticker")
+
+    with db.connect() as conn:
+        sentiment_rows = db.fetch_daily_sentiment_window(
+            conn, start=start_date, end=end_date, ticker_root=root,
+        )
+        articles = db.fetch_articles_in_window(
+            conn, start=start_date, end=end_date, ticker_root=root,
+        )
+        bars = fetch_ohlc_trailing(conn, root, end_date, days=days)
+
+    if not articles and not bars:
+        raise HTTPException(status_code=404, detail="no data in window")
+
+    by_day = {r["day"]: r for r in sentiment_rows}
+    closes_by_day = {b["bar_date"]: float(b["close"]) for b in bars}
+
+    daily: list[dict[str, Any]] = []
+    closes: list[float] = []
+    nets: list[float] = []
+    for offset in range(days):
+        d = start_date + timedelta(days=offset)
+        s = by_day.get(d)
+        pos = int(s["positive"]) if s else 0
+        neu = int(s["neutral"]) if s else 0
+        neg = int(s["negative"]) if s else 0
+        total = pos + neu + neg
+        net = (pos - neg) / total if total else 0.0
+        avg_score = (
+            float(s["avg_score"]) if s and s.get("avg_score") is not None else None
+        )
+        close = closes_by_day.get(d)
+        if total > 0 and close is not None:
+            closes.append(close)
+            nets.append(net)
+        daily.append({
+            "date": d.isoformat(),
+            "positive": pos, "neutral": neu, "negative": neg,
+            "total": total, "net": net,
+            "avgScore": avg_score,
+            "close": close,
+        })
+
+    publisher_counts: dict[str, int] = {}
+    subject_counts: dict[str, int] = {}
+    by_sentiment = {"positive": 0, "neutral": 0, "negative": 0}
+    for a in articles:
+        sent = a.get("sentiment")
+        if sent in by_sentiment:
+            by_sentiment[sent] += 1
+        site = a.get("site")
+        if site:
+            publisher_counts[site] = publisher_counts.get(site, 0) + 1
+        for sub in (a.get("subjects") or []):
+            subject_counts[sub] = subject_counts.get(sub, 0) + 1
+
+    top_publishers = sorted(
+        ({"site": k, "count": v} for k, v in publisher_counts.items()),
+        key=lambda x: x["count"], reverse=True,
+    )[:10]
+    top_subjects = sorted(
+        ({"subject": k, "count": v} for k, v in subject_counts.items()),
+        key=lambda x: x["count"], reverse=True,
+    )[:10]
+
+    return {
+        "ticker": root,
+        "name": name,
+        "window": {
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+            "days": days,
+        },
+        "counts": {"total": len(articles), "bySentiment": by_sentiment},
+        "daily": daily,
+        "topPublishers": top_publishers,
+        "topSubjects": top_subjects,
+        "correlation": _pearson(closes, nets),
+    }
+
+
+@app.get("/api/advisor/overall")
+def get_advisor_overall(window: int = 7, end: str | None = None) -> dict[str, Any]:
+    payload = get_trends_overall(window=window, end=end)
+    end_iso = payload["window"]["end"]
+    end_date = date.fromisoformat(end_iso)
+    days = payload["window"]["days"]
+
+    with db.connect() as conn:
+        cached = db.fetch_advisor_narrative(
+            conn, window_days=days, end_date=end_date, ticker_root="",
+        )
+    if cached:
+        return _serialize_narrative(cached)
+
+    from finance_news.nlp.advisor import summarize_market_window
+    result = summarize_market_window(
+        window_days=days, end=end_iso,
+        daily=payload["daily"],
+        top_companies=payload["topCompanies"],
+        sector_matrix=payload["sectorMatrix"],
+    )
+    if result is None:
+        raise HTTPException(status_code=503, detail="advisor unavailable")
+
+    article_count = payload["counts"]["total"]
+    with db.connect() as conn:
+        db.upsert_advisor_narrative(
+            conn,
+            window_days=days, end_date=end_date, ticker_root="",
+            paragraphs=result["paragraphs"],
+            article_count=article_count,
+            model=result["model"],
+        )
+    return {
+        "paragraphs": result["paragraphs"],
+        "articleCount": article_count,
+        "model": result["model"],
+        "generatedAt": _now_iso(),
+    }
+
+
+@app.get("/api/advisor/company/{ticker_root}")
+def get_advisor_company(
+    ticker_root: str,
+    window: int = 7,
+    end: str | None = None,
+) -> dict[str, Any]:
+    payload = get_trends_company(ticker_root=ticker_root, window=window, end=end)
+    end_iso = payload["window"]["end"]
+    end_date = date.fromisoformat(end_iso)
+    days = payload["window"]["days"]
+    root = payload["ticker"]
+
+    with db.connect() as conn:
+        cached = db.fetch_advisor_narrative(
+            conn, window_days=days, end_date=end_date, ticker_root=root,
+        )
+    if cached:
+        return _serialize_narrative(cached)
+
+    from finance_news.nlp.advisor import summarize_company_window
+    result = summarize_company_window(
+        ticker=root, name=payload["name"],
+        window_days=days, end=end_iso,
+        daily=payload["daily"],
+        correlation=payload["correlation"],
+        top_subjects=payload["topSubjects"],
+        top_publishers=payload["topPublishers"],
+    )
+    if result is None:
+        raise HTTPException(status_code=503, detail="advisor unavailable")
+
+    article_count = payload["counts"]["total"]
+    with db.connect() as conn:
+        db.upsert_advisor_narrative(
+            conn,
+            window_days=days, end_date=end_date, ticker_root=root,
+            paragraphs=result["paragraphs"],
+            article_count=article_count,
+            model=result["model"],
+        )
+    return {
+        "paragraphs": result["paragraphs"],
+        "articleCount": article_count,
+        "model": result["model"],
+        "generatedAt": _now_iso(),
+    }
+
+
+def _serialize_narrative(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "paragraphs": list(row["paragraphs"]),
+        "articleCount": row["article_count"],
+        "model": row["model"],
+        "generatedAt": row["created_at"].isoformat() if row.get("created_at") else None,
+    }
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 @app.get("/api/companies/{ticker_root}/summary/{summary_date}")
 def get_company_summary(ticker_root: str, summary_date: str) -> dict[str, Any]:
     try:
@@ -434,6 +682,259 @@ def get_stock_ohlc(ticker_root: str, ohlc_date: str) -> dict[str, Any]:
             for b in bars
         ],
     }
+
+
+@app.get("/api/companies")
+def list_companies() -> list[dict[str, Any]]:
+    """All tracked companies sorted by market cap desc."""
+    return [
+        {
+            "tickerRoot": c["ticker_root"],
+            "ticker": c["ticker"],
+            "shortName": c.get("short_name"),
+            "longName": c.get("long_name"),
+            "sector": c.get("sector"),
+            "marketCap": c.get("market_cap"),
+        }
+        for c in load_companies_from_db()
+    ]
+
+
+@app.get("/api/portfolio/snapshot")
+def get_portfolio_snapshot(
+    tickers: str = "",
+    windows: str = "3,7,14",
+) -> list[dict[str, Any]]:
+    """Current close, day open, and window gain/loss % for a list of tickers.
+
+    ``tickers`` — comma-separated ticker roots (e.g. ``PETR,VALE``).
+    ``windows`` — comma-separated subset of {3,7,14}.
+    Unknown tickers are included with all values ``null``.
+    """
+    if not tickers:
+        raise HTTPException(status_code=400, detail="tickers is required")
+
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()][:30]
+
+    try:
+        window_list = [int(w.strip()) for w in windows.split(",") if w.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid windows parameter")
+    if not all(w in _WINDOW_OPTIONS for w in window_list):
+        raise HTTPException(
+            status_code=400,
+            detail=f"windows must be a subset of {list(_WINDOW_OPTIONS)}",
+        )
+
+    companies_map = {
+        c["ticker_root"]: c for c in load_companies_from_db()
+    }
+
+    with db.connect() as conn:
+        end_date = db.latest_article_date(conn) or date.today()
+
+    results: list[dict[str, Any]] = []
+    with db.connect() as conn:
+        for root in ticker_list:
+            bars = fetch_ohlc_trailing(conn, root, end_date, days=20)
+            comp = companies_map.get(root)
+            if not bars:
+                results.append({
+                    "tickerRoot": root,
+                    "ticker": comp["ticker"] if comp else root,
+                    "shortName": comp.get("short_name") if comp else None,
+                    "currentClose": None,
+                    "dayOpen": None,
+                    "changes": {str(w): None for w in window_list},
+                    "asOf": end_date.isoformat(),
+                })
+                continue
+
+            last_bar = bars[-1]
+            current_close = float(last_bar["close"])
+            day_open = float(last_bar["open"])
+
+            changes: dict[str, float | None] = {}
+            for w in window_list:
+                cutoff = end_date - timedelta(days=w)
+                ref_bar = next(
+                    (b for b in reversed(bars) if b["bar_date"] <= cutoff),
+                    None,
+                )
+                if ref_bar is None:
+                    changes[str(w)] = None
+                else:
+                    ref_close = float(ref_bar["close"])
+                    changes[str(w)] = (
+                        (current_close - ref_close) / ref_close * 100
+                        if ref_close != 0 else None
+                    )
+
+            results.append({
+                "tickerRoot": root,
+                "ticker": comp["ticker"] if comp else root,
+                "shortName": comp.get("short_name") if comp else None,
+                "currentClose": current_close,
+                "dayOpen": day_open,
+                "changes": changes,
+                "asOf": last_bar["bar_date"].isoformat(),
+            })
+
+    return results
+
+
+@app.get("/api/companies/dates")
+def get_companies_dates(tickers: str = "") -> dict[str, list[str]]:
+    """SP-dates that have ≥1 article for any of the given tickers.
+
+    ``tickers`` — comma-separated ticker roots. Returns ``{ dates: [...] }``
+    sorted descending. Used by the sidebar portfolio filter.
+    """
+    if not tickers:
+        return {"dates": []}
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()][:30]
+
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT (published_at AT TIME ZONE 'America/Sao_Paulo')::date AS d
+            FROM articles
+            WHERE published_at IS NOT NULL
+              AND matched_tickers && %s::text[]
+            ORDER BY d DESC
+            """,
+            (ticker_list,),
+        )
+        dates = [r["d"].isoformat() for r in cur.fetchall()]
+    return {"dates": dates}
+
+
+_BRAPI_QUOTE_URL = "https://brapi.dev/api/quote/"
+_BRAPI_WORKERS = 8  # concurrent requests for the live stream
+
+
+def _brapi_quotes(full_tickers: list[str]) -> dict[str, dict]:
+    """Fetch near-realtime prices from BrAPI for a list of full ticker symbols.
+
+    Free tier only accepts one ticker per request, so we fan out concurrently.
+    Returns a dict keyed by uppercase symbol: {price, open, time}.
+    Silently skips failed tickers; returns {} if BRAPI_TOKEN is absent.
+    """
+    token = os.environ.get("BRAPI_TOKEN", "").strip()
+    if not token or not full_tickers:
+        return {}
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_one(sym: str) -> tuple[str, dict | None]:
+        try:
+            r = _requests.get(
+                _BRAPI_QUOTE_URL + sym,
+                params={"token": token},
+                timeout=10,
+            )
+            r.raise_for_status()
+            for item in r.json().get("results") or []:
+                price = item.get("regularMarketPrice")
+                open_ = item.get("regularMarketOpen")
+                time_ = item.get("regularMarketTime")
+                if price is not None:
+                    return sym.upper(), {
+                        "price": float(price),
+                        "open": float(open_) if open_ is not None else None,
+                        "time": str(time_) if time_ else None,
+                    }
+        except Exception:
+            pass
+        return sym.upper(), None
+
+    result: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(_BRAPI_WORKERS, len(full_tickers))) as ex:
+        futs = {ex.submit(_fetch_one, s) for s in full_tickers}
+        for fut in as_completed(futs):
+            sym_key, val = fut.result()
+            if val is not None:
+                result[sym_key] = val
+    return result
+
+
+@app.get("/api/portfolio/stream")
+async def stream_portfolio(tickers: str = "") -> StreamingResponse:
+    """SSE stream of live prices for a list of tickers.
+
+    Emits one ``prices`` event immediately, then every 5 seconds.
+    Each event contains the latest close, open, and timestamp per ticker.
+    """
+    if not tickers:
+        raise HTTPException(status_code=400, detail="tickers is required")
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()][:30]
+
+    async def gen():
+        yield ": stream-open\n\n"
+        loop = asyncio.get_running_loop()
+        try:
+            while True:
+                def _fetch():
+                    today = date.today()
+                    # Build root → full ticker mapping from DB
+                    companies = load_companies_from_db()
+                    root_to_full = {
+                        c["ticker_root"]: c["ticker"]
+                        for c in companies
+                        if c["ticker_root"] in ticker_list
+                    }
+                    full_tickers = [
+                        root_to_full[r] for r in ticker_list if r in root_to_full
+                    ]
+                    brapi = _brapi_quotes(full_tickers)
+
+                    items = []
+                    with db.connect() as conn:
+                        for root in ticker_list:
+                            full = root_to_full.get(root)
+                            live = brapi.get(full) if full else None
+                            if live:
+                                items.append({
+                                    "tickerRoot": root,
+                                    "currentClose": live["price"],
+                                    "dayOpen": live["open"],
+                                    "asOf": live["time"] or today.isoformat(),
+                                })
+                            else:
+                                # Fallback: last cached OHLC bar
+                                bars = fetch_ohlc_trailing(conn, root, today, days=1)
+                                if bars:
+                                    b = bars[-1]
+                                    items.append({
+                                        "tickerRoot": root,
+                                        "currentClose": float(b["close"]),
+                                        "dayOpen": float(b["open"]),
+                                        "asOf": b["bar_date"].isoformat(),
+                                    })
+                                else:
+                                    items.append({
+                                        "tickerRoot": root,
+                                        "currentClose": None,
+                                        "dayOpen": None,
+                                        "asOf": today.isoformat(),
+                                    })
+                    return items
+
+                items = await loop.run_in_executor(None, _fetch)
+                yield f"data: {json.dumps({'type': 'prices', 'items': items})}\n\n"
+                await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/health")

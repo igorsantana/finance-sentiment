@@ -31,7 +31,11 @@ function tiltColor(tilt: number, alpha = 1): string {
   return `hsl(${h.toFixed(0)} ${s.toFixed(0)}% ${l.toFixed(0)}% / ${alpha})`;
 }
 
-export function SectorHeatmap({ data }: { data: ReportPayload }) {
+export function SectorHeatmap({
+  data,
+}: {
+  data: Pick<ReportPayload, "sectorMatrix">;
+}) {
   const rows = data.sectorMatrix
     .slice()
     .sort(

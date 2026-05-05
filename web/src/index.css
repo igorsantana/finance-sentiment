@@ -52,14 +52,55 @@
   }
 }
 
+/* ── Cyberpunk keyframes ───────────────────────────────────── */
+@keyframes neon-flicker {
+  0%, 18%, 22%, 25%, 53%, 57%, 100% { opacity: 1; }
+  20%, 24%, 55%                      { opacity: 0.45; }
+}
+
+@keyframes glow-breathe {
+  0%, 100% { box-shadow: 0 0 8px hsl(var(--primary) / 0.35); }
+  50%       { box-shadow: 0 0 22px hsl(var(--primary) / 0.7), 0 0 44px hsl(var(--primary) / 0.2); }
+}
+
+@keyframes live-ring {
+  0%        { transform: scale(1); opacity: 0.75; }
+  75%, 100% { transform: scale(2.6); opacity: 0; }
+}
+
+@keyframes price-flash-up {
+  0%   { color: hsl(var(--sentiment-positive)); text-shadow: 0 0 16px hsl(var(--sentiment-positive)); }
+  100% { color: inherit; text-shadow: none; }
+}
+
+@keyframes price-flash-down {
+  0%   { color: hsl(var(--sentiment-negative)); text-shadow: 0 0 16px hsl(var(--sentiment-negative)); }
+  100% { color: inherit; text-shadow: none; }
+}
+
+@keyframes scanline-sweep {
+  0%   { background-position: -120% bottom; }
+  100% { background-position: 220% bottom; }
+}
+
 @layer components {
   .neon-edge {
     border-color: hsl(var(--primary) / 0.6);
     box-shadow: 0 0 10px hsl(var(--primary) / 0.35);
+    animation: glow-breathe 3s ease-in-out infinite;
   }
   .neon-edge-magenta {
     border-color: hsl(var(--accent) / 0.6);
     box-shadow: 0 0 10px hsl(var(--accent) / 0.35);
+  }
+  .neon-flicker {
+    animation: neon-flicker 8s linear infinite;
+  }
+  .price-flash-up {
+    animation: price-flash-up 0.65s ease-out forwards;
+  }
+  .price-flash-down {
+    animation: price-flash-down 0.65s ease-out forwards;
   }
   .scanline {
     border-bottom: 1px solid transparent;
@@ -69,8 +110,9 @@
       hsl(var(--primary) / 0.18),
       transparent
     );
-    background-size: 100% 1px;
+    background-size: 40% 1px;
     background-repeat: no-repeat;
-    background-position: bottom;
+    background-position: -120% bottom;
+    animation: scanline-sweep 6s ease-in-out infinite;
   }
 }

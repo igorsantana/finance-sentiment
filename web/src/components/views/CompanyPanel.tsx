@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChartCard } from "./charts/ChartCard";
-import { EmptyTile } from "./charts/_chart-axis";
-import { SentimentVsPriceChart } from "./charts/SentimentVsPriceChart";
-import { StockCandleChart } from "./charts/StockCandleChart";
-import { Combobox, type ComboboxOption } from "./ui/combobox";
-import { useCompanySummary } from "../hooks/useCompanySummary";
-import { useReport } from "../hooks/useReport";
-import { useSentimentSeries } from "../hooks/useSentimentSeries";
-import { useStockOhlc } from "../hooks/useStockOhlc";
-import { formatPtBr } from "../lib/date";
-import { SENTIMENT_COLORS, SENTIMENT_LABEL_PT, type SentimentTone } from "../lib/sentiment";
+import { ChartCard } from "../charts/ChartCard";
+import { EmptyTile } from "../charts/_chart-axis";
+import { SentimentVsPriceChart } from "../charts/SentimentVsPriceChart";
+import { StockCandleChart } from "../charts/StockCandleChart";
+import { Combobox, type ComboboxOption } from "../ui/combobox";
+import { useCompanySummary } from "../../hooks/useCompanySummary";
+import { useReport } from "../../hooks/useReport";
+import { useSentimentSeries } from "../../hooks/useSentimentSeries";
+import { useStockOhlc } from "../../hooks/useStockOhlc";
+import { formatPtBr } from "../../lib/date";
+import { SENTIMENT_COLORS, SENTIMENT_LABEL_PT, type SentimentTone } from "../../lib/sentiment";
 
 export type CompanyPanelProps = {
   date: string | null;

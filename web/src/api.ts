@@ -71,6 +71,110 @@ export async function getReport(
   return r.json();
 }
 
+export type WindowSize = 3 | 7 | 14;
+
+export type WindowOverall = {
+  window: { start: string; end: string; days: number };
+  counts: {
+    total: number;
+    publishers: number;
+    bySentiment: { positive: number; neutral: number; negative: number };
+  };
+  topCompanies: ReportPayload["topCompanies"];
+  sentimentByPublisher: ReportPayload["sentimentByPublisher"];
+  sectorMatrix: ReportPayload["sectorMatrix"];
+  topSubjects: ReportPayload["topSubjects"];
+  topTickers: ReportPayload["topTickers"];
+  daily: Array<{
+    date: string;
+    positive: number;
+    neutral: number;
+    negative: number;
+    total: number;
+    net: number;
+  }>;
+};
+
+export type WindowCompany = {
+  ticker: string;
+  name: string;
+  window: { start: string; end: string; days: number };
+  counts: {
+    total: number;
+    bySentiment: { positive: number; neutral: number; negative: number };
+  };
+  daily: Array<{
+    date: string;
+    positive: number;
+    neutral: number;
+    negative: number;
+    total: number;
+    net: number;
+    avgScore: number | null;
+    close: number | null;
+  }>;
+  topPublishers: Array<{ site: string; count: number }>;
+  topSubjects: Array<{ subject: string; count: number }>;
+  correlation: number | null;
+};
+
+export type AdvisorNarrative = {
+  paragraphs: string[];
+  articleCount: number;
+  model: string;
+  generatedAt: string | null;
+};
+
+export type AdvisorScope = "overall" | { ticker: string };
+
+export async function getTrendsOverall(
+  window: WindowSize,
+  end?: string,
+  signal?: AbortSignal,
+  tickers?: string[],
+): Promise<WindowOverall> {
+  const qs = new URLSearchParams({ window: String(window) });
+  if (end) qs.set("end", end);
+  if (tickers && tickers.length > 0) qs.set("tickers", tickers.join(","));
+  const r = await fetch(`/api/trends/overall?${qs}`, { signal });
+  if (!r.ok) throw new Error(`GET /api/trends/overall → ${r.status}`);
+  return r.json();
+}
+
+export async function getTrendsCompany(
+  ticker: string,
+  window: WindowSize,
+  end?: string,
+  signal?: AbortSignal,
+): Promise<WindowCompany> {
+  const qs = new URLSearchParams({ window: String(window) });
+  if (end) qs.set("end", end);
+  const r = await fetch(
+    `/api/trends/company/${encodeURIComponent(ticker)}?${qs}`,
+    { signal },
+  );
+  if (!r.ok) throw new Error(`GET /api/trends/company/${ticker} → ${r.status}`);
+  return r.json();
+}
+
+export async function getAdvisor(
+  scope: AdvisorScope,
+  window: WindowSize,
+  end?: string,
+  signal?: AbortSignal,
+): Promise<AdvisorNarrative | null> {
+  const qs = new URLSearchParams({ window: String(window) });
+  if (end) qs.set("end", end);
+  const path =
+    scope === "overall"
+      ? `/api/advisor/overall?${qs}`
+      : `/api/advisor/company/${encodeURIComponent(scope.ticker)}?${qs}`;
+  const r = await fetch(path, { signal });
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`GET ${path} → ${r.status}`);
+  return r.json();
+}
+
 export type CompanySummary = {
   ticker: string;
   name: string | null;
@@ -155,6 +259,52 @@ export async function getStockOhlc(
     { signal },
   );
   if (!r.ok) throw new Error(`GET /api/stocks/${ticker}/ohlc/${date} → ${r.status}`);
+  return r.json();
+}
+
+export type CompanyListItem = {
+  tickerRoot: string;
+  ticker: string;
+  shortName: string | null;
+  longName: string | null;
+  sector: string | null;
+  marketCap: number | null;
+};
+
+export type PortfolioSnapshotItem = {
+  tickerRoot: string;
+  ticker: string;
+  shortName: string | null;
+  currentClose: number | null;
+  dayOpen: number | null;
+  changes: { "3": number | null; "7": number | null; "14": number | null };
+  asOf: string;
+};
+
+export type PortfolioPriceItem = {
+  tickerRoot: string;
+  currentClose: number | null;
+  dayOpen: number | null;
+  asOf: string;
+};
+
+export async function getCompanies(signal?: AbortSignal): Promise<CompanyListItem[]> {
+  const r = await fetch("/api/companies", { signal });
+  if (!r.ok) throw new Error(`GET /api/companies → ${r.status}`);
+  return r.json();
+}
+
+export async function getPortfolioSnapshot(
+  tickers: string[],
+  windows: number[] = [3, 7, 14],
+  signal?: AbortSignal,
+): Promise<PortfolioSnapshotItem[]> {
+  const qs = new URLSearchParams({
+    tickers: tickers.join(","),
+    windows: windows.join(","),
+  });
+  const r = await fetch(`/api/portfolio/snapshot?${qs}`, { signal });
+  if (!r.ok) throw new Error(`GET /api/portfolio/snapshot → ${r.status}`);
   return r.json();
 }
 

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Loader2, PlayCircle } from "lucide-react";
-import { Button } from "./ui/button";
+import { Button } from "../ui/button";
 import { LogsPanel } from "./LogsPanel";
-import type { LogLine } from "../hooks/useRunStream";
+import type { LogLine } from "../../hooks/useRunStream";
 
 export type PipelineViewProps = {
   runDate: string;

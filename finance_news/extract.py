@@ -24,6 +24,7 @@ except ImportError:
 
 from finance_news import logconfig
 from finance_news.nlp import analysis, entities
+from finance_news.nlp.sports_filter import detect_sports_context
 from finance_news.nlp.companies import (
     Company,
     CompanyMatcher,
@@ -91,6 +92,16 @@ def _process_article(
     )
     matches = matcher.match(text, doc=ents.get("doc"))
     matched_tickers = sorted({m.ticker_root for m in matches})
+
+    if matched_tickers:
+        verdict = detect_sports_context(title, body, subjects, ents["companies"])
+        if verdict.is_sports:
+            log.info(
+                "sports_context dropped %s for %s (%s)",
+                matched_tickers, url, ",".join(verdict.reasons[:3]),
+            )
+            conflicts = list(conflicts) + ["sports_context"]
+            matched_tickers = []
 
     return {
         "url": url,

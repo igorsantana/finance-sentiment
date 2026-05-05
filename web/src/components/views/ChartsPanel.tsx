@@ -1,19 +1,19 @@
-import { Card, CardContent } from "./ui/card";
-import { ChartCard } from "./charts/ChartCard";
-import { HeaderStats } from "./charts/HeaderStats";
-import { SentimentDonut } from "./charts/SentimentDonut";
-import { TopCompaniesBar } from "./charts/TopCompaniesBar";
-import { SentimentByPublisher } from "./charts/SentimentByPublisher";
-import { CompaniesStacked } from "./charts/CompaniesStacked";
-import { SectorHeatmap } from "./charts/SectorHeatmap";
-import { SectorDrilldown } from "./charts/SectorDrilldown";
-import { HourlyTimeline } from "./charts/HourlyTimeline";
-import { ScoreHistogram } from "./charts/ScoreHistogram";
-import { TopSubjects } from "./charts/TopSubjects";
-import { TopTickers } from "./charts/TopTickers";
-import { Currencies } from "./charts/Currencies";
-import { useReport } from "../hooks/useReport";
-import type { ReportPayload } from "../api";
+import { Card, CardContent } from "../ui/card";
+import { ChartCard } from "../charts/ChartCard";
+import { HeaderStats } from "../charts/HeaderStats";
+import { SentimentDonut } from "../charts/SentimentDonut";
+import { TopCompaniesBar } from "../charts/TopCompaniesBar";
+import { SentimentByPublisher } from "../charts/SentimentByPublisher";
+import { CompaniesStacked } from "../charts/CompaniesStacked";
+import { SectorHeatmap } from "../charts/SectorHeatmap";
+import { SectorDrilldown } from "../charts/SectorDrilldown";
+import { HourlyTimeline } from "../charts/HourlyTimeline";
+import { ScoreHistogram } from "../charts/ScoreHistogram";
+import { TopSubjects } from "../charts/TopSubjects";
+import { TopTickers } from "../charts/TopTickers";
+import { Currencies } from "../charts/Currencies";
+import { useReport } from "../../hooks/useReport";
+import type { ReportPayload } from "../../api";
 
 type SlotId =
   | "D1" | "D2" | "D3" | "D5"
