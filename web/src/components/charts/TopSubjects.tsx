@@ -37,7 +37,11 @@ function SubjectTooltip({
   );
 }
 
-export function TopSubjects({ data }: { data: ReportPayload }) {
+export function TopSubjects({
+  data,
+}: {
+  data: Pick<ReportPayload, "topSubjects">;
+}) {
   const rows = data.topSubjects.slice(0, 15).slice().reverse();
 
   return (

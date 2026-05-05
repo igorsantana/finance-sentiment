@@ -46,7 +46,11 @@ function StackTooltip({
   );
 }
 
-export function SentimentByPublisher({ data }: { data: ReportPayload }) {
+export function SentimentByPublisher({
+  data,
+}: {
+  data: Pick<ReportPayload, "sentimentByPublisher">;
+}) {
   const rows = data.sentimentByPublisher.slice(0, 25).slice().reverse();
 
   return (

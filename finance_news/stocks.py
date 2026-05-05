@@ -156,6 +156,35 @@ def _normalize_cached(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def fetch_ohlc_trailing(
+    conn,
+    ticker_root: str,
+    end: date,
+    *,
+    days: int,
+) -> list[dict[str, Any]]:
+    """Daily bars in the trailing window ``[end - (days - 1), end]``.
+
+    Hits the ``stock_ohlc`` cache first; on miss, pulls a wider calendar
+    window from yfinance (`2 * days` calendar days back from ``end``)
+    so weekends/holidays don't starve the cache, then re-reads.
+    """
+    start = end - timedelta(days=days - 1)
+    fetch_start = end - timedelta(days=2 * days)
+
+    cached = db.fetch_ohlc_range(conn, ticker_root=ticker_root, start=start, end=end)
+    if cached:
+        return _normalize_cached(cached)
+
+    symbol = _resolve_symbol(conn, ticker_root)
+    fresh = _fetch_from_yfinance(symbol, fetch_start, end)
+    if fresh:
+        db.upsert_ohlc(conn, ticker_root=ticker_root, bars=fresh)
+        conn.commit()
+        cached = db.fetch_ohlc_range(conn, ticker_root=ticker_root, start=start, end=end)
+    return _normalize_cached(cached)
+
+
 def warm_ticker(
     conn,
     ticker_root: str,

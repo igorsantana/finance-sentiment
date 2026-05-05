@@ -37,7 +37,11 @@ function TickerTooltip({
   );
 }
 
-export function TopTickers({ data }: { data: ReportPayload }) {
+export function TopTickers({
+  data,
+}: {
+  data: Pick<ReportPayload, "topTickers">;
+}) {
   const rows = data.topTickers.slice(0, 15).slice().reverse();
 
   return (

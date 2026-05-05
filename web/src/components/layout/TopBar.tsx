@@ -1,4 +1,4 @@
-import type { StageProgress } from "../hooks/useRunStream";
+import type { StageProgress } from "../../hooks/useRunStream";
 
 const STAGES = [
   { id: "ingest", label: "Buscar", icon: "🔍" },
@@ -80,7 +80,7 @@ export function TopBar({ running, stage, stageProgress }: TopBarProps) {
                 isError
                   ? "bg-destructive"
                   : running
-                    ? "bg-primary shadow-[0_0_8px_hsl(var(--accent)/0.5)]"
+                    ? "bg-primary shadow-[0_0_12px_hsl(var(--primary)/0.8),_0_0_24px_hsl(var(--primary)/0.3)] neon-flicker"
                     : "bg-primary/60"
               }`}
               style={{ width: `${progressPercent}%` }}

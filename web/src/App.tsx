@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { PipelineView } from "./components/PipelineView";
-import { ReportView, type ViewMode } from "./components/ReportView";
-import { Sidebar, type Section } from "./components/Sidebar";
-import { TopBar } from "./components/TopBar";
+import { AnalysisView } from "./components/views/AnalysisView";
+import { PipelineView } from "./components/views/PipelineView";
+import { PortfolioView } from "./components/views/PortfolioView";
+import { ReportView, type ViewMode } from "./components/views/ReportView";
+import { Sidebar, type Section } from "./components/layout/Sidebar";
+import { TopBar } from "./components/layout/TopBar";
 import { useRunStream } from "./hooks/useRunStream";
 import { DatesPayload, getDates } from "./api";
 
@@ -16,12 +18,45 @@ function todayInSP(): string {
   return fmt.format(new Date());
 }
 
+function loadStorage<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export default function App() {
   const [dates, setDates] = useState<DatesPayload>({ with_articles: [] });
   const [section, setSection] = useState<Section>("pipeline");
   const [reportDate, setReportDate] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("charts");
   const [runDate, setRunDate] = useState<string>(() => todayInSP());
+
+  const [portfolioTickers, setPortfolioTickersRaw] = useState<string[]>(
+    () => loadStorage<string[]>("portfolioTickers", [])
+  );
+  const [portfolioFilterActive, setPortfolioFilterActiveRaw] = useState<boolean>(
+    () => loadStorage<boolean>("portfolioFilterActive", false)
+  );
+  const [portfolioDatesSet, setPortfolioDatesSet] = useState<Set<string> | null>(null);
+
+  const setPortfolioTickers = (tickers: string[]) => {
+    setPortfolioTickersRaw(tickers);
+    localStorage.setItem("portfolioTickers", JSON.stringify(tickers));
+    if (tickers.length === 0) {
+      setPortfolioFilterActiveRaw(false);
+      localStorage.setItem("portfolioFilterActive", JSON.stringify(false));
+    }
+  };
+
+  const toggleFilter = () => {
+    const next = !portfolioFilterActive;
+    setPortfolioFilterActiveRaw(next);
+    localStorage.setItem("portfolioFilterActive", JSON.stringify(next));
+  };
 
   const refreshDates = () =>
     getDates().then(setDates).catch((e) => console.error(e));
@@ -33,8 +68,6 @@ export default function App() {
       }
     },
     onReattach: (active) => {
-      // A run that started before this tab opened — surface it on Pipeline so
-      // logs and the stepper are immediately in view.
       setRunDate(active.target_date);
       setSection("pipeline");
     },
@@ -43,6 +76,21 @@ export default function App() {
   useEffect(() => {
     refreshDates();
   }, []);
+
+  // Fetch dates with articles for portfolio tickers when filter is active
+  useEffect(() => {
+    if (!portfolioFilterActive || portfolioTickers.length === 0) {
+      setPortfolioDatesSet(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    const params = new URLSearchParams({ tickers: portfolioTickers.join(",") });
+    fetch(`/api/companies/dates?${params}`, { signal: ctrl.signal })
+      .then((r) => r.json())
+      .then((d: { dates: string[] }) => setPortfolioDatesSet(new Set(d.dates)))
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, [portfolioFilterActive, portfolioTickers]);
 
   const canRun = !running && /^\d{4}-\d{2}-\d{2}$/.test(runDate);
 
@@ -62,8 +110,14 @@ export default function App() {
         section={section}
         reportDate={reportDate}
         reportDates={dates.with_articles}
+        portfolioFilterActive={portfolioFilterActive}
+        portfolioTickers={portfolioTickers}
+        portfolioDatesSet={portfolioDatesSet}
         onSelectPipeline={() => setSection("pipeline")}
         onSelectReport={handleSelectReport}
+        onSelectAnalysis={() => setSection("analysis")}
+        onSelectPortfolio={() => setSection("portfolio")}
+        onToggleFilter={toggleFilter}
       />
 
       <div className="flex flex-col min-h-screen">
@@ -79,6 +133,16 @@ export default function App() {
               final={final}
               logs={logs}
               onStart={handleStart}
+            />
+          ) : section === "analysis" ? (
+            <AnalysisView
+              portfolioFilter={portfolioFilterActive}
+              portfolioTickers={portfolioTickers}
+            />
+          ) : section === "portfolio" ? (
+            <PortfolioView
+              portfolioTickers={portfolioTickers}
+              onPortfolioChange={setPortfolioTickers}
             />
           ) : (
             <ReportView

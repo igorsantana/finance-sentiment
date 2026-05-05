@@ -8,7 +8,17 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { SentimentSeries } from "../../api";
+// Point is a structural shape so both /sentiment-series (selected-day) and
+// /trends/company (rolling window) endpoints can feed this chart.
+export type SeriesPoint = {
+  date: string;
+  close: number | null;
+  net: number;
+  total: number;
+  positive: number;
+  neutral: number;
+  negative: number;
+};
 import {
   EmptyTile,
   TooltipShell,
@@ -22,7 +32,7 @@ import { formatPtBr } from "../../lib/date";
 const PRICE_COLOR = "hsl(var(--primary))";
 
 export type SentimentVsPriceChartProps = {
-  data: SentimentSeries;
+  data: { points: SeriesPoint[]; selectedDate?: string };
 };
 
 export function SentimentVsPriceChart({ data }: SentimentVsPriceChartProps) {
@@ -30,9 +40,12 @@ export function SentimentVsPriceChart({ data }: SentimentVsPriceChartProps) {
     return <EmptyTile label="— sem dados —" />;
   }
 
-  const closes = data.points.map((p) => p.close);
-  const minClose = Math.min(...closes);
-  const maxClose = Math.max(...closes);
+  const closes = data.points
+    .map((p) => p.close)
+    .filter((v): v is number => v !== null);
+  const hasClose = closes.length > 0;
+  const minClose = hasClose ? Math.min(...closes) : 0;
+  const maxClose = hasClose ? Math.max(...closes) : 1;
   const padClose = (maxClose - minClose) * 0.05 || maxClose * 0.01 || 1;
 
   return (
@@ -69,12 +82,14 @@ export function SentimentVsPriceChart({ data }: SentimentVsPriceChartProps) {
             {...yAxisDefaults}
           />
           <ReferenceLine yAxisId="net" y={0} stroke="hsl(var(--border))" />
-          <ReferenceLine
-            yAxisId="net"
-            x={data.selectedDate}
-            stroke="hsl(var(--primary) / 0.4)"
-            strokeDasharray="3 3"
-          />
+          {data.selectedDate && (
+            <ReferenceLine
+              yAxisId="net"
+              x={data.selectedDate}
+              stroke="hsl(var(--primary) / 0.4)"
+              strokeDasharray="3 3"
+            />
+          )}
           <Tooltip cursor={tooltipCursor} content={<SeriesTooltip />} />
           <Bar
             yAxisId="net"
@@ -91,6 +106,7 @@ export function SentimentVsPriceChart({ data }: SentimentVsPriceChartProps) {
             stroke={PRICE_COLOR}
             strokeWidth={2}
             dot={false}
+            connectNulls
             isAnimationActive={false}
           />
         </ComposedChart>
@@ -104,7 +120,7 @@ type BarShapeProps = {
   y?: number;
   width?: number;
   height?: number;
-  payload?: SentimentSeries["points"][number];
+  payload?: SeriesPoint;
 };
 
 function NetBar({ x, y, width, height, payload }: BarShapeProps) {
@@ -131,7 +147,7 @@ function SeriesTooltip({
   payload,
 }: {
   active?: boolean;
-  payload?: Array<{ payload: SentimentSeries["points"][number] }>;
+  payload?: Array<{ payload: SeriesPoint }>;
 }) {
   if (!active || !payload?.length) return null;
   const p = payload[0].payload;
@@ -142,7 +158,7 @@ function SeriesTooltip({
       </div>
       <div className="grid grid-cols-2 gap-x-3 mt-1 tabular-nums">
         <span className="text-muted-foreground">Fech.</span>
-        <span className="text-right">{p.close.toFixed(2)}</span>
+        <span className="text-right">{p.close === null ? "—" : p.close.toFixed(2)}</span>
         <span className="text-muted-foreground">Net</span>
         <span className="text-right">{p.net.toFixed(2)}</span>
         <span className="text-muted-foreground">Artigos</span>

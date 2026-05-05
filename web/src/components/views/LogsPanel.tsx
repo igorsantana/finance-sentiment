@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { ChevronDown } from "lucide-react";
-import { ScrollArea } from "./ui/scroll-area";
-import type { LogLine } from "../hooks/useRunStream";
+import { ScrollArea } from "../ui/scroll-area";
+import type { LogLine } from "../../hooks/useRunStream";
 
 const LEVEL_ICON: Record<string, string> = {
   INFO: "ℹ",
