@@ -369,6 +369,45 @@ export function openStream(
   return es;
 }
 
+// ---------- Admin ----------
+
+export type AdminArticle = {
+  url: string;
+  title: string | null;
+  site: string | null;
+  publishedAt: string | null;
+  sentiment: string | null;
+  sentimentScore: number | null;
+  matchedTickers: string[];
+  judgment: { label: string; notes: string } | null;
+};
+
+export async function getAdminArticles(
+  date: string,
+  ticker?: string,
+  signal?: AbortSignal,
+): Promise<AdminArticle[]> {
+  const qs = new URLSearchParams({ date });
+  if (ticker) qs.set("ticker", ticker);
+  const r = await fetch(`/api/admin/articles?${qs}`, { signal });
+  if (!r.ok) throw new Error(`GET /api/admin/articles → ${r.status}`);
+  return r.json();
+}
+
+export async function postJudgment(
+  articleUrl: string,
+  label: string,
+  notes?: string,
+): Promise<{ ok: boolean }> {
+  const r = await fetch("/api/admin/judgments", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ articleUrl, label, notes: notes ?? "" }),
+  });
+  if (!r.ok) throw new Error(`POST /api/admin/judgments → ${r.status}`);
+  return r.json();
+}
+
 export function toIsoDate(d: Date): string {
   // Convert to São Paulo timezone (where articles and runs are stored).
   const spFormatter = new Intl.DateTimeFormat("en-CA", {

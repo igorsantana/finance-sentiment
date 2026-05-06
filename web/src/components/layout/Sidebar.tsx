@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Briefcase, ChevronDown, Cpu, FileBarChart, LineChart, Zap } from "lucide-react";
+import { Briefcase, ChevronDown, Cpu, FileBarChart, LineChart, ShieldCheck, Zap } from "lucide-react";
 import { formatPtBr } from "../../lib/date";
 
-export type Section = "pipeline" | "report" | "analysis" | "portfolio";
+export type Section = "pipeline" | "report" | "analysis" | "portfolio" | "admin";
 
 export type SidebarProps = {
   section: Section;
@@ -13,6 +13,7 @@ export type SidebarProps = {
   onSelectReport: (dateIso: string) => void;
   onSelectAnalysis: () => void;
   onSelectPortfolio: () => void;
+  onSelectAdmin: () => void;
 };
 
 export function Sidebar({
@@ -24,6 +25,7 @@ export function Sidebar({
   onSelectReport,
   onSelectAnalysis,
   onSelectPortfolio,
+  onSelectAdmin,
 }: SidebarProps) {
   const [reportsOpen, setReportsOpen] = useState(true);
 
@@ -76,6 +78,15 @@ export function Sidebar({
               {portfolioTickers.length}
             </span>
           )}
+        </button>
+
+        <button
+          type="button"
+          onClick={onSelectAdmin}
+          className={`${baseEntry} ${section === "admin" ? active : idle}`}
+        >
+          <ShieldCheck className="h-4 w-4" />
+          <span className="font-mono uppercase tracking-wider text-xs">Admin</span>
         </button>
 
         <button

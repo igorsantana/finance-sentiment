@@ -109,6 +109,7 @@ _AMBIGUOUS_ALIASES = {
     "anima",        # archaic noun "ânima" (soul)
     "suzano",       # also a city in São Paulo (Suzano-SP)
     "natura", "localiza", "raia", "vibra", "ultra", "cielo", "cogna",
+    "porto seguro",
 }
 
 # Window-level cues for the context gate. Normalized form: lowercase,
@@ -241,12 +242,22 @@ class CompanyMatcher:
         doc=None,
         *,
         org_texts: Optional[set[str]] = None,
-    ) -> list[Company]:
+        relevance_scorer=None,
+        title: str = "",
+    ) -> tuple[list[Company], Optional["np.ndarray"]]:
+        """Return ``(companies, article_embedding)``.
+
+        ``article_embedding`` is the 384-dim relevance embedding when
+        ``relevance_scorer`` is provided, otherwise ``None``.
+        Ticker-path matches bypass relevance filtering (ticker codes are
+        unambiguous in real articles); only alias-path candidates are scored.
+        """
         if not text:
-            return []
+            return [], None
         if org_texts is None:
             org_texts = _norm_org_set(doc)
-        found_roots: list[str] = []
+        alias_roots: list[str] = []
+        ticker_roots: list[str] = []
         seen: set[str] = set()
 
         # Path 1: name aliases over normalized text.
@@ -270,7 +281,7 @@ class CompanyMatcher:
                     if score < _CONTEXT_THRESHOLD:
                         continue
                 seen.add(root)
-                found_roots.append(root)
+                alias_roots.append(root)
 
         # Path 2: case-sensitive ticker scan. Uppercase-only by construction,
         # so it can't collide with Portuguese prose.
@@ -279,9 +290,17 @@ class CompanyMatcher:
                 continue
             if ticker_re.search(text):
                 seen.add(root)
-                found_roots.append(root)
+                ticker_roots.append(root)
 
-        return [self._root_to_company[r] for r in found_roots]
+        article_emb = None
+        if relevance_scorer is not None and alias_roots:
+            article_emb = relevance_scorer.embed_article(title, text)
+            alias_companies = [self._root_to_company[r] for r in alias_roots]
+            alias_companies = relevance_scorer.filter_matches(article_emb, alias_companies)
+            alias_roots = [c.ticker_root for c in alias_companies]
+
+        found_roots = alias_roots + ticker_roots
+        return [self._root_to_company[r] for r in found_roots], article_emb
 
     def sector_of(self, ticker_root: str) -> Optional[str]:
         c = self._root_to_company.get(ticker_root.upper())

@@ -10,6 +10,13 @@ Usage::
 
     python -m scripts.backfill.rematch_companies [--dry-run]
         [--since YYYY-MM-DD] [--limit N] [--batch 500]
+        [--with-relevance]
+
+``--with-relevance``
+    Also run the embedding relevance scorer on each article (loads the
+    sentence-transformer model). Stores ``relevance_embedding`` and
+    ``sentiment_embedding`` for every article processed. Significantly slower
+    (~5–10× on CPU) — run overnight or with a small ``--limit`` first to test.
 """
 from __future__ import annotations
 
@@ -17,6 +24,7 @@ import argparse
 import logging
 import sys
 from datetime import date
+from typing import Optional
 
 from finance_news import logconfig
 from finance_news.nlp.companies import (
@@ -26,6 +34,7 @@ from finance_news.nlp.companies import (
     to_company,
 )
 from finance_news.store import db
+from finance_news.store.db import _vec
 
 log = logging.getLogger("backfill.rematch")
 
@@ -72,13 +81,28 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--since", type=date.fromisoformat, default=None)
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--batch", type=int, default=500)
+    p.add_argument("--with-relevance", action="store_true",
+                   help="Run embedding relevance scorer; store relevance and "
+                        "sentiment embeddings in the DB.")
     args = p.parse_args(argv)
 
     logconfig.silence_third_party()
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    matcher = CompanyMatcher([to_company(r) for r in load_companies_from_db()])
+    companies = [to_company(r) for r in load_companies_from_db()]
+    matcher = CompanyMatcher(companies)
+
+    scorer = None
+    sentiment = None
+    if args.with_relevance:
+        from finance_news.nlp.relevance import CompanyRelevanceScorer
+        from finance_news.nlp.analysis import SentimentAnalyzer
+        scorer = CompanyRelevanceScorer(companies)
+        scorer._load()
+        sentiment = SentimentAnalyzer()
+        sentiment._load()
+        log.info("Relevance scorer and sentiment model ready")
 
     scanned = 0
     changed = 0
@@ -86,25 +110,57 @@ def main(argv: list[str] | None = None) -> int:
     with db.connect() as conn:
         for row in _iter_candidates(conn, args.since, args.limit, args.batch):
             scanned += 1
-            text = (row.get("title") or "") + "\n" + (row.get("text") or "")
+            title = row.get("title") or ""
+            body = row.get("text") or ""
+            text = title + "\n" + body
             org_texts = {_norm(o) for o in (row.get("companies_ner") or []) if o}
-            new_tickers = sorted({
-                m.ticker_root for m in matcher.match(text, org_texts=org_texts)
-            })
+
+            new_companies, rel_emb = matcher.match(
+                text, org_texts=org_texts,
+                relevance_scorer=scorer, title=title,
+            )
+            new_tickers = sorted({m.ticker_root for m in new_companies})
             old_tickers = sorted(row.get("matched_tickers") or [])
-            if new_tickers == old_tickers:
+
+            sent_emb = None
+            if sentiment is not None:
+                sent_emb = sentiment.embed(title, body)
+
+            tickers_changed = new_tickers != old_tickers
+            has_emb_update = args.with_relevance
+
+            if not tickers_changed and not has_emb_update:
                 continue
+
             changed += 1
             if args.dry_run:
-                print(f"{row['url']}\told={','.join(old_tickers)}\tnew={','.join(new_tickers)}")
+                if tickers_changed:
+                    print(f"{row['url']}\told={','.join(old_tickers)}\tnew={','.join(new_tickers)}")
                 continue
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE articles SET matched_tickers = %s WHERE url = %s",
-                    (new_tickers, row["url"]),
-                )
+
+            if args.with_relevance:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE articles
+                        SET matched_tickers     = %s,
+                            relevance_embedding = %s::vector,
+                            sentiment_embedding = %s::vector
+                        WHERE url = %s
+                        """,
+                        (new_tickers, _vec(rel_emb), _vec(sent_emb), row["url"]),
+                    )
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE articles SET matched_tickers = %s WHERE url = %s",
+                        (new_tickers, row["url"]),
+                    )
             conn.commit()
             updated += 1
+
+            if updated % 100 == 0:
+                log.info("progress: scanned=%d updated=%d", scanned, updated)
 
     log.info("scanned=%d changed=%d updated=%d (dry_run=%s)",
              scanned, changed, updated, args.dry_run)

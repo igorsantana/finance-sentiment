@@ -31,6 +31,7 @@ from finance_news.nlp.companies import (
     load_companies_from_db,
     to_company,
 )
+from finance_news.nlp.relevance import CompanyRelevanceScorer
 from finance_news.store import db
 
 log = logging.getLogger("extract")
@@ -53,7 +54,10 @@ def _env_workers(default: int = 4) -> int:
 
 
 def _process_article(
-    art: dict[str, Any], matcher: CompanyMatcher, sentiment
+    art: dict[str, Any],
+    matcher: CompanyMatcher,
+    sentiment,
+    scorer: Optional[CompanyRelevanceScorer] = None,
 ) -> Optional[dict[str, Any]]:
     """Compute the analysis fields for one article. Returns the kwargs for
     ``db.update_extraction`` or ``None`` if NER itself failed (we leave the
@@ -87,10 +91,14 @@ def _process_article(
         log.debug("sentiment failed on %s: %s", url, e)
         sent = analysis.SentimentResult(label="", score=0.0)
 
+    sent_emb = sentiment.embed(title, body)
+
     conflicts = analysis.detect_conflicts(
         art.get("hostname") or "", art.get("author") or "", subjects
     )
-    matches = matcher.match(text, doc=ents.get("doc"))
+    matches, rel_emb = matcher.match(
+        text, doc=ents.get("doc"), relevance_scorer=scorer, title=title
+    )
     matched_tickers = sorted({m.ticker_root for m in matches})
 
     if matched_tickers:
@@ -115,6 +123,8 @@ def _process_article(
         "matched_tickers": matched_tickers,
         "conflicts": conflicts,
         "summary": _summary(body),
+        "relevance_embedding": rel_emb,
+        "sentiment_embedding": sent_emb,
     }
 
 
@@ -135,8 +145,12 @@ def run(
     sentiment._load()
 
     company_rows = load_companies_from_db()
-    matcher = CompanyMatcher([to_company(c) for c in company_rows])
+    companies = [to_company(c) for c in company_rows]
+    matcher = CompanyMatcher(companies)
     log.info("Loaded %d companies for matching", len(company_rows))
+
+    scorer = CompanyRelevanceScorer(companies)
+    scorer._load()
 
     with db.connect() as read_conn:
         articles = list(db.iter_unextracted(read_conn, for_date=target_date))
@@ -155,7 +169,7 @@ def run(
     done = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {
-            ex.submit(_process_article, a, matcher, sentiment): a
+            ex.submit(_process_article, a, matcher, sentiment, scorer): a
             for a in articles
         }
         for fut in as_completed(futures):

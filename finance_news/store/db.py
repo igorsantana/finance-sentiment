@@ -18,12 +18,26 @@ from typing import Any, Iterator, Optional
 import psycopg
 from psycopg.rows import dict_row
 
-
 def _dsn() -> str:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         raise RuntimeError("DATABASE_URL is not set")
     return dsn
+
+
+def _vec(arr: "Any") -> "Optional[str]":
+    """Serialise a numpy array (or None) to a pgvector text literal.
+
+    Passing a plain Python string like ``"[0.1,0.2,...]"`` with a ``::vector``
+    cast in the SQL avoids any dependency on the pgvector psycopg adapter while
+    still storing the correct binary vector type in Postgres.
+    """
+    if arr is None:
+        return None
+    try:
+        return "[" + ",".join(f"{float(x):.8g}" for x in arr) + "]"
+    except Exception:
+        return None
 
 
 @contextmanager
@@ -148,22 +162,26 @@ def update_extraction(
     matched_tickers: list[str],
     conflicts: list[str],
     summary: Optional[str],
+    relevance_embedding: "Optional[Any]" = None,
+    sentiment_embedding: "Optional[Any]" = None,
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE articles SET
-                sentiment        = %s,
-                sentiment_score  = %s,
-                subjects         = %s,
-                companies_ner    = %s,
-                persons          = %s,
-                countries        = %s,
-                currencies       = %s,
-                matched_tickers  = %s,
-                conflicts        = %s,
-                summary          = %s,
-                extracted_at     = now()
+                sentiment           = %s,
+                sentiment_score     = %s,
+                subjects            = %s,
+                companies_ner       = %s,
+                persons             = %s,
+                countries           = %s,
+                currencies          = %s,
+                matched_tickers     = %s,
+                conflicts           = %s,
+                summary             = %s,
+                relevance_embedding = %s::vector,
+                sentiment_embedding = %s::vector,
+                extracted_at        = now()
             WHERE url = %s
             """,
             (
@@ -177,6 +195,8 @@ def update_extraction(
                 matched_tickers,
                 conflicts,
                 summary,
+                _vec(relevance_embedding),
+                _vec(sentiment_embedding),
                 url,
             ),
         )

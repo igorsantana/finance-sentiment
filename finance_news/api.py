@@ -31,7 +31,7 @@ from typing import Any, Iterator
 
 import requests as _requests
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -966,3 +966,106 @@ def health() -> dict[str, str]:
         return {"status": "ok", "db": "ok"}
     except Exception as e:
         return {"status": "degraded", "db": repr(e)}
+
+
+# ---------- Admin endpoints ----------
+
+_VALID_JUDGMENT_LABELS = {"positive", "neutral", "negative", "skip", "bad_match"}
+
+
+@app.get("/api/admin/articles")
+def admin_articles(
+    date_iso: str = Query(alias="date"),
+    ticker: str | None = None,
+):
+    """Articles for a given SP-day, joined with any existing judgment.
+
+    Query params:
+      date   YYYY-MM-DD (required)
+      ticker optional ticker root filter
+    """
+    try:
+        from datetime import date as _date
+        day = _date.fromisoformat(date_iso)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid date")
+
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            params: list[Any] = [day]
+            ticker_clause = ""
+            if ticker:
+                ticker_clause = "AND %s = ANY(a.matched_tickers)"
+                params.append(ticker)
+            cur.execute(
+                f"""
+                SELECT
+                    a.url,
+                    a.title,
+                    a.site,
+                    a.published_at,
+                    a.sentiment,
+                    a.sentiment_score,
+                    a.matched_tickers,
+                    j.label       AS judgment_label,
+                    j.notes       AS judgment_notes
+                FROM articles a
+                LEFT JOIN LATERAL (
+                    SELECT label, notes
+                    FROM judgments
+                    WHERE article_url = a.url
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ) j ON true
+                WHERE (a.published_at AT TIME ZONE 'America/Sao_Paulo')::date = %s
+                {ticker_clause}
+                ORDER BY a.published_at DESC
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "url": r["url"],
+            "title": r["title"],
+            "site": r["site"],
+            "publishedAt": r["published_at"].isoformat() if r["published_at"] else None,
+            "sentiment": r["sentiment"],
+            "sentimentScore": float(r["sentiment_score"]) if r["sentiment_score"] is not None else None,
+            "matchedTickers": r["matched_tickers"] or [],
+            "judgment": (
+                {"label": r["judgment_label"], "notes": r["judgment_notes"] or ""}
+                if r["judgment_label"] else None
+            ),
+        }
+        for r in rows
+    ]
+
+
+class JudgmentBody(BaseModel):
+    articleUrl: str
+    label: str
+    notes: str = ""
+
+
+@app.post("/api/admin/judgments")
+def admin_upsert_judgment(body: JudgmentBody):
+    """Insert a judgment for an article. Multiple judgments per article are
+    kept (audit trail); GET /admin/articles returns the most recent one."""
+    if body.label not in _VALID_JUDGMENT_LABELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"label must be one of {sorted(_VALID_JUDGMENT_LABELS)}",
+        )
+    judge = os.environ.get("JUDGE_NAME") or "admin"
+    with db.connect() as conn:
+        db.insert_judgment(
+            conn,
+            article_url=body.articleUrl,
+            judge=judge,
+            label=body.label,
+            notes=body.notes or None,
+        )
+        conn.commit()
+    return {"ok": True}

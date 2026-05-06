@@ -72,6 +72,31 @@ class SentimentAnalyzer:
     def model_name(self) -> Optional[str]:
         return self._model_name
 
+    def embed(self, title: str, text: str) -> "Optional[np.ndarray]":
+        """Return mean-pooled, L2-normalised [CLS] embedding from the sentiment
+        model's base encoder. Shape ``(768,)`` float32. Soft-fail → ``None``."""
+        try:
+            self._load()
+            if self._pipe is None:
+                return None
+            import numpy as np
+            import torch
+
+            snippet = ((title or "").strip() + ". " + (text or "").strip())[:1500]
+            tok = self._pipe.tokenizer(
+                snippet, return_tensors="pt", truncation=True, max_length=512
+            )
+            with torch.no_grad():
+                out = self._pipe.model.base_model(**tok)
+            mask = tok["attention_mask"].unsqueeze(-1).float()
+            pooled = (out.last_hidden_state * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+            arr = pooled.cpu().numpy()[0].astype(np.float32)
+            norm = float(np.linalg.norm(arr))
+            return arr / max(norm, 1e-9)
+        except Exception as exc:
+            log.debug("sentiment embed failed: %s", exc)
+            return None
+
     def predict(self, title: str, text: str) -> SentimentResult:
         """Score title + article lead. Finance headlines carry most of the tone;
         keeping the slice under ~1500 chars ensures we stay inside BERT's 512
