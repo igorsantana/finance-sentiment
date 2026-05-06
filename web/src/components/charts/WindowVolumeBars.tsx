@@ -1,6 +1,7 @@
 import {
   Bar,
   BarChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -14,23 +15,46 @@ import {
   xAxisDefaults,
   yAxisDefaults,
 } from "./_chart-axis";
-import {
-  SENTIMENT_COLORS,
-  SENTIMENT_LABEL_PT,
-  type SentimentTone,
-} from "../../lib/sentiment";
+import { SENTIMENT_COLORS } from "../../lib/sentiment";
 import { formatPtBr } from "../../lib/date";
 import type { DailyPoint } from "./WindowSentimentLine";
 
-const STACK: SentimentTone[] = ["positive", "neutral", "negative"];
+type ChartPoint = DailyPoint & { _ref: number };
 
 export function WindowVolumeBars({ data }: { data: DailyPoint[] }) {
   const total = data.reduce((acc, d) => acc + d.total, 0);
   if (total === 0) return <EmptyTile />;
+
+  const maxVal = Math.max(...data.map((d) => Math.max(d.positive, d.negative)), 1);
+  const chartData: ChartPoint[] = data.map((d) => ({ ...d, _ref: maxVal }));
+
+  // Single bar per category (full width) renders both halves via custom shape.
+  // _ref = maxVal ensures height covers exactly half the chart → zeroY = y + height.
+  const barShape = (props: any) => {
+    const { x, y, width, height, payload } = props;
+    const zeroY = y + height;
+    const ppu = height / maxVal;
+    const posH = payload.positive * ppu;
+    const negH = payload.negative * ppu;
+    const bw = Math.max(width - 2, 1);
+    return (
+      <g>
+        {posH > 0.5 && (
+          <rect x={x + 1} y={zeroY - posH} width={bw} height={posH}
+            fill={SENTIMENT_COLORS.positive} rx={2} />
+        )}
+        {negH > 0.5 && (
+          <rect x={x + 1} y={zeroY} width={bw} height={negH}
+            fill={SENTIMENT_COLORS.negative} rx={2} />
+        )}
+      </g>
+    );
+  };
+
   return (
     <div className="h-56">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+        <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <XAxis
             dataKey="date"
             tickFormatter={(iso: string) => {
@@ -41,18 +65,20 @@ export function WindowVolumeBars({ data }: { data: DailyPoint[] }) {
             minTickGap={16}
             {...xAxisDefaults}
           />
-          <YAxis width={28} {...yAxisDefaults} />
+          <YAxis
+            domain={[-maxVal, maxVal]}
+            tickFormatter={(v: number) => String(Math.abs(v))}
+            width={28}
+            {...yAxisDefaults}
+          />
+          <ReferenceLine y={0} stroke="hsl(var(--border))" strokeWidth={1} />
           <Tooltip cursor={tooltipCursor} content={<VolumeTooltip />} />
-          {STACK.map((tone) => (
-            <Bar
-              key={tone}
-              dataKey={tone}
-              stackId="s"
-              fill={SENTIMENT_COLORS[tone]}
-              name={SENTIMENT_LABEL_PT[tone]}
-              isAnimationActive={false}
-            />
-          ))}
+          <Bar
+            dataKey="_ref"
+            fillOpacity={0}
+            isAnimationActive={false}
+            shape={barShape}
+          />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -64,7 +90,7 @@ function VolumeTooltip({
   payload,
 }: {
   active?: boolean;
-  payload?: Array<{ payload: DailyPoint }>;
+  payload?: Array<{ payload: ChartPoint }>;
 }) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload;

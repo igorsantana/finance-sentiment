@@ -6,7 +6,6 @@ import { SentimentByPublisher } from "../charts/SentimentByPublisher";
 import { SentimentVsPriceChart } from "../charts/SentimentVsPriceChart";
 import { TopSubjects } from "../charts/TopSubjects";
 import { TopTickers } from "../charts/TopTickers";
-import { WindowSentimentLine } from "../charts/WindowSentimentLine";
 import { WindowVolumeBars } from "../charts/WindowVolumeBars";
 import { Combobox, type ComboboxOption } from "../ui/combobox";
 import { useAdvisor } from "../../hooks/useAdvisor";
@@ -182,21 +181,14 @@ function OverallPanel({
 }) {
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard
-          title="Sentimento ao longo do período"
-          subtitle={data ? `${data.counts.total} artigos` : undefined}
-        >
-          <Body loading={loading} error={error} hasData={!!data} h={56}>
-            {data && <WindowSentimentLine data={data.daily} />}
-          </Body>
-        </ChartCard>
-        <ChartCard title="Volume diário">
-          <Body loading={loading} error={error} hasData={!!data} h={56}>
-            {data && <WindowVolumeBars data={data.daily} />}
-          </Body>
-        </ChartCard>
-      </div>
+      <ChartCard
+        title="Volume e sentimento diário"
+        subtitle={data ? `${data.counts.total} artigos` : undefined}
+      >
+        <Body loading={loading} error={error} hasData={!!data} h={56}>
+          {data && <WindowVolumeBars data={data.daily} />}
+        </Body>
+      </ChartCard>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ChartCard title="Setores">
           <Body loading={loading} error={error} hasData={!!data} h={48}>
@@ -247,23 +239,14 @@ function CompanyPanel({
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard
-          title="Sentimento × Cotação"
-          subtitle={corrLabel ?? undefined}
-        >
-          <Body loading={loading} error={error} hasData={!!data} h={72}>
-            {data && (
-              <SentimentVsPriceChart data={{ points: data.daily }} />
-            )}
-          </Body>
-        </ChartCard>
-        <ChartCard title="Volume × Sentimento">
-          <Body loading={loading} error={error} hasData={!!data} h={72}>
-            {data && <WindowVolumeBars data={data.daily} />}
-          </Body>
-        </ChartCard>
-      </div>
+      <ChartCard
+        title="Sentimento × Cotação"
+        subtitle={corrLabel ?? undefined}
+      >
+        <Body loading={loading} error={error} hasData={!!data} h={72}>
+          {data && <SentimentVsPriceChart data={{ points: data.daily }} />}
+        </Body>
+      </ChartCard>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ChartCard title="Top assuntos">
           <Body loading={loading} error={error} hasData={!!data} h={48}>

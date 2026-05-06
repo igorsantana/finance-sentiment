@@ -88,10 +88,10 @@ export default function App() {
         onSelectPortfolio={() => setSection("portfolio")}
       />
 
-      <div className="flex flex-col min-h-screen">
+      <div className="flex flex-col min-h-screen overflow-x-hidden">
         <TopBar running={running} stage={stage} stageProgress={stageProgress} />
 
-        <div className="flex-1 px-8 py-8">
+        <div className="flex-1 px-8 py-8 min-w-0">
           {section === "pipeline" ? (
             <PipelineView
               runDate={runDate}

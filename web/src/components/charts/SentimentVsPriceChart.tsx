@@ -29,6 +29,8 @@ import {
 import { SENTIMENT_COLORS } from "../../lib/sentiment";
 import { formatPtBr } from "../../lib/date";
 
+type ChartPoint = SeriesPoint & { _ref: number };
+
 const PRICE_COLOR = "hsl(var(--primary))";
 
 export type SentimentVsPriceChartProps = {
@@ -40,6 +42,12 @@ export function SentimentVsPriceChart({ data }: SentimentVsPriceChartProps) {
     return <EmptyTile label="— sem dados —" />;
   }
 
+  const maxCount = Math.max(
+    ...data.points.map((p) => Math.max(p.positive, p.negative)),
+    1,
+  );
+  const chartData: ChartPoint[] = data.points.map((p) => ({ ...p, _ref: maxCount }));
+
   const closes = data.points
     .map((p) => p.close)
     .filter((v): v is number => v !== null);
@@ -48,12 +56,37 @@ export function SentimentVsPriceChart({ data }: SentimentVsPriceChartProps) {
   const maxClose = hasClose ? Math.max(...closes) : 1;
   const padClose = (maxClose - minClose) * 0.05 || maxClose * 0.01 || 1;
 
+  const barShape = (props: any) => {
+    const { x, y, width, height, payload } = props;
+    const zeroY = y + height;
+    const ppu = height / maxCount;
+    const posH = payload.positive * ppu;
+    const negH = payload.negative * ppu;
+    const bw = Math.max(width - 2, 1);
+    return (
+      <g>
+        {posH > 0.5 && (
+          <rect
+            x={x + 1} y={zeroY - posH} width={bw} height={posH}
+            fill={SENTIMENT_COLORS.positive} rx={2}
+          />
+        )}
+        {negH > 0.5 && (
+          <rect
+            x={x + 1} y={zeroY} width={bw} height={negH}
+            fill={SENTIMENT_COLORS.negative} rx={2}
+          />
+        )}
+      </g>
+    );
+  };
+
   return (
     <div className="h-72">
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart
-          data={data.points}
-          margin={{ top: 8, right: 56, left: 0, bottom: 0 }}
+          data={chartData}
+          margin={{ top: 8, right: hasClose ? 56 : 8, left: 0, bottom: 0 }}
         >
           <XAxis
             dataKey="date"
@@ -66,25 +99,26 @@ export function SentimentVsPriceChart({ data }: SentimentVsPriceChartProps) {
             {...xAxisDefaults}
           />
           <YAxis
-            yAxisId="net"
-            domain={[-1, 1]}
-            ticks={[-1, -0.5, 0, 0.5, 1]}
-            tickFormatter={(v: number) => v.toFixed(1)}
-            width={36}
+            yAxisId="count"
+            domain={[-maxCount, maxCount]}
+            tickFormatter={(v: number) => String(Math.abs(v))}
+            width={28}
             {...yAxisDefaults}
           />
-          <YAxis
-            yAxisId="price"
-            orientation="right"
-            domain={[minClose - padClose, maxClose + padClose]}
-            tickFormatter={(v: number) => v.toFixed(2)}
-            width={48}
-            {...yAxisDefaults}
-          />
-          <ReferenceLine yAxisId="net" y={0} stroke="hsl(var(--border))" />
+          {hasClose && (
+            <YAxis
+              yAxisId="price"
+              orientation="right"
+              domain={[minClose - padClose, maxClose + padClose]}
+              tickFormatter={(v: number) => v.toFixed(2)}
+              width={48}
+              {...yAxisDefaults}
+            />
+          )}
+          <ReferenceLine yAxisId="count" y={0} stroke="hsl(var(--border))" />
           {data.selectedDate && (
             <ReferenceLine
-              yAxisId="net"
+              yAxisId="count"
               x={data.selectedDate}
               stroke="hsl(var(--primary) / 0.4)"
               strokeDasharray="3 3"
@@ -92,54 +126,28 @@ export function SentimentVsPriceChart({ data }: SentimentVsPriceChartProps) {
           )}
           <Tooltip cursor={tooltipCursor} content={<SeriesTooltip />} />
           <Bar
-            yAxisId="net"
-            dataKey="net"
-            name="Net sentiment"
+            yAxisId="count"
+            dataKey="_ref"
+            fillOpacity={0}
             isAnimationActive={false}
-            shape={(props: BarShapeProps) => <NetBar {...props} />}
+            shape={barShape}
           />
-          <Line
-            yAxisId="price"
-            type="monotone"
-            dataKey="close"
-            name="Fechamento"
-            stroke={PRICE_COLOR}
-            strokeWidth={2}
-            dot={false}
-            connectNulls
-            isAnimationActive={false}
-          />
+          {hasClose && (
+            <Line
+              yAxisId="price"
+              type="monotone"
+              dataKey="close"
+              stroke={PRICE_COLOR}
+              strokeWidth={2}
+              dot={false}
+              connectNulls
+              isAnimationActive={false}
+            />
+          )}
         </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
-}
-
-type BarShapeProps = {
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
-  payload?: SeriesPoint;
-};
-
-function NetBar({ x, y, width, height, payload }: BarShapeProps) {
-  if (
-    x == null ||
-    y == null ||
-    width == null ||
-    height == null ||
-    !payload
-  )
-    return null;
-  if (payload.total === 0) return null;
-  const fill =
-    payload.net > 0
-      ? SENTIMENT_COLORS.positive
-      : payload.net < 0
-        ? SENTIMENT_COLORS.negative
-        : SENTIMENT_COLORS.neutral;
-  return <rect x={x} y={y} width={width} height={height} fill={fill} opacity={0.7} />;
 }
 
 function SeriesTooltip({
@@ -147,7 +155,7 @@ function SeriesTooltip({
   payload,
 }: {
   active?: boolean;
-  payload?: Array<{ payload: SeriesPoint }>;
+  payload?: Array<{ payload: ChartPoint }>;
 }) {
   if (!active || !payload?.length) return null;
   const p = payload[0].payload;
@@ -157,10 +165,12 @@ function SeriesTooltip({
         {formatPtBr(p.date)}
       </div>
       <div className="grid grid-cols-2 gap-x-3 mt-1 tabular-nums">
-        <span className="text-muted-foreground">Fech.</span>
-        <span className="text-right">{p.close === null ? "—" : p.close.toFixed(2)}</span>
-        <span className="text-muted-foreground">Net</span>
-        <span className="text-right">{p.net.toFixed(2)}</span>
+        {p.close !== null && (
+          <>
+            <span className="text-muted-foreground">Fech.</span>
+            <span className="text-right">{p.close?.toFixed(2)}</span>
+          </>
+        )}
         <span className="text-muted-foreground">Artigos</span>
         <span className="text-right">{p.total}</span>
       </div>

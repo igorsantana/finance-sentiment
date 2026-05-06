@@ -84,6 +84,20 @@ function loadQty(tickers: string[]): Record<string, number> {
   }
 }
 
+function loadAvg(tickers: string[]): Record<string, number> {
+  try {
+    const raw = localStorage.getItem("portfolioAvgPrices");
+    const stored = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    return Object.fromEntries(tickers.map((t) => [t, stored[t] ?? 0]));
+  } catch {
+    return Object.fromEntries(tickers.map((t) => [t, 0]));
+  }
+}
+
+function fmtBrl(n: number): string {
+  return n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 // ── Stock cards ───────────────────────────────────────────────────────────────
 
 const CARD_COLORS = [
@@ -103,6 +117,8 @@ function StockCards({
   companies,
   quantities,
   onQtyChange,
+  avgPrices,
+  onAvgChange,
   windowSize,
 }: {
   portfolioTickers: string[];
@@ -113,6 +129,8 @@ function StockCards({
   companies: CompanyListItem[];
   quantities: Record<string, number>;
   onQtyChange: (root: string, qty: number) => void;
+  avgPrices: Record<string, number>;
+  onAvgChange: (root: string, avg: number) => void;
   windowSize: WindowSize;
 }) {
   const snapshotMap = useMemo(
@@ -121,7 +139,7 @@ function StockCards({
   );
 
   return (
-    <div className="flex gap-3 overflow-x-auto pb-1">
+    <div className="flex gap-3 overflow-x-auto pb-1 w-full min-w-0">
       {portfolioTickers.map((root, idx) => {
         const snap = snapshotMap[root];
         const live = prices[root];
@@ -135,7 +153,6 @@ function StockCards({
         const positive = dayChangePct != null && dayChangePct > 0;
         const negative = dayChangePct != null && dayChangePct < 0;
         const color = CARD_COLORS[idx % CARD_COLORS.length];
-        const windowChange = snap?.changes?.[String(windowSize) as "3" | "7" | "14"];
 
         return (
           <div
@@ -208,30 +225,172 @@ function StockCards({
               })}
             </div>
 
-            <div className="pt-1 border-t border-border/40 flex items-center gap-1.5">
-              <span className="text-[9px] font-mono text-muted-foreground/50 shrink-0">Qtd.</span>
-              <input
-                type="number"
-                min={0}
-                value={quantities[root] || ""}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10);
-                  onQtyChange(root, isNaN(v) || v < 0 ? 0 : v);
-                }}
-                placeholder="0"
-                className="w-full bg-muted/20 border border-border/60 rounded px-1.5 py-0.5 text-[10px] font-mono text-right outline-none focus:border-primary/50 tabular-nums"
-              />
+            <div className="pt-1 border-t border-border/40 space-y-1.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-mono text-muted-foreground/50 w-6 shrink-0">Qtd.</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={quantities[root] || ""}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    onQtyChange(root, isNaN(v) || v < 0 ? 0 : v);
+                  }}
+                  placeholder="0"
+                  className="w-full bg-muted/20 border border-border/60 rounded px-1.5 py-0.5 text-[10px] font-mono text-right outline-none focus:border-primary/50 tabular-nums"
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-mono text-muted-foreground/50 w-6 shrink-0">P.M.</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={avgPrices[root] || ""}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    onAvgChange(root, isNaN(v) || v < 0 ? 0 : v);
+                  }}
+                  placeholder="0,00"
+                  className="w-full bg-muted/20 border border-border/60 rounded px-1.5 py-0.5 text-[10px] font-mono text-right outline-none focus:border-primary/50 tabular-nums"
+                />
+              </div>
             </div>
 
-            {windowChange != null && quantities[root] > 0 && currentClose != null && (
-              <div className="text-[9px] font-mono text-muted-foreground/50 text-right">
-                {(windowChange / 100 * quantities[root] * currentClose / (1 + windowChange / 100)) >= 0 ? "+" : ""}
-                R$ {((windowChange / 100) * (quantities[root] * currentClose / (1 + windowChange / 100))).toFixed(0)} no período
-              </div>
-            )}
+            {(() => {
+              const qty = quantities[root] ?? 0;
+              const avg = avgPrices[root] ?? 0;
+              if (qty <= 0 || avg <= 0 || currentClose == null) return null;
+              const pnlPct = ((currentClose - avg) / avg) * 100;
+              const pnlBrl = (currentClose - avg) * qty;
+              const gain = pnlBrl >= 0;
+              return (
+                <div className={`text-[9px] font-mono tabular-nums text-right leading-tight ${gain ? "text-green-400" : "text-red-400"}`}>
+                  {gain ? "+" : ""}R$ {fmtBrl(pnlBrl)}<br />
+                  <span className="opacity-70">{gain ? "+" : ""}{pnlPct.toFixed(2)}% vs P.M.</span>
+                </div>
+              );
+            })()}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── Portfolio summary (P&L vs average buy price) ─────────────────────────────
+
+function PortfolioSummary({
+  portfolioTickers,
+  snapshot,
+  prices,
+  quantities,
+  avgPrices,
+  companies,
+}: {
+  portfolioTickers: string[];
+  snapshot: PortfolioSnapshotItem[];
+  prices: Record<string, { currentClose: number | null; dayOpen: number | null; asOf: string | null }>;
+  quantities: Record<string, number>;
+  avgPrices: Record<string, number>;
+  companies: CompanyListItem[];
+}) {
+  const snapshotMap = useMemo(
+    () => Object.fromEntries(snapshot.map((s) => [s.tickerRoot, s])),
+    [snapshot]
+  );
+
+  const rows = portfolioTickers
+    .map((root, idx) => {
+      const qty = quantities[root] ?? 0;
+      const avg = avgPrices[root] ?? 0;
+      const live = prices[root];
+      const snap = snapshotMap[root];
+      const currentClose = live?.currentClose ?? snap?.currentClose ?? null;
+      const comp = companies.find((c) => c.tickerRoot === root);
+      const ticker = snap?.ticker ?? root;
+      const name = comp?.shortName ?? comp?.longName ?? root;
+      const invested = qty > 0 && avg > 0 ? qty * avg : null;
+      const current = qty > 0 && currentClose != null ? qty * currentClose : null;
+      const pnlBrl = invested != null && current != null ? current - invested : null;
+      const pnlPct = invested != null && pnlBrl != null ? (pnlBrl / invested) * 100 : null;
+      return { root, ticker, name, qty, avg, currentClose, invested, current, pnlBrl, pnlPct, color: CARD_COLORS[idx % CARD_COLORS.length] };
+    })
+    .filter((r) => r.qty > 0 || r.avg > 0);
+
+  if (rows.length === 0) return null;
+
+  const totalInvested = rows.reduce((s, r) => s + (r.invested ?? 0), 0);
+  const totalCurrent = rows.reduce((s, r) => s + (r.current ?? 0), 0);
+  const totalPnlBrl = totalInvested > 0 && totalCurrent > 0 ? totalCurrent - totalInvested : null;
+  const totalPnlPct = totalInvested > 0 && totalPnlBrl != null ? (totalPnlBrl / totalInvested) * 100 : null;
+
+  const th = "px-3 py-2 text-left text-[10px] font-mono uppercase tracking-widest text-muted-foreground/60 whitespace-nowrap";
+  const td = "px-3 py-2 text-xs font-mono tabular-nums whitespace-nowrap";
+
+  return (
+    <div className="rounded-lg border border-border bg-background/60 overflow-hidden">
+      <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-4 flex-wrap">
+        <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70">
+          Resumo da carteira
+        </span>
+        {totalPnlBrl != null && (
+          <div className="flex items-center gap-4">
+            <span className="text-[10px] font-mono text-muted-foreground/50">
+              Investido: <span className="text-foreground">R$ {fmtBrl(totalInvested)}</span>
+            </span>
+            <span className="text-[10px] font-mono text-muted-foreground/50">
+              Atual: <span className="text-foreground">R$ {fmtBrl(totalCurrent)}</span>
+            </span>
+            <span className={`text-sm font-mono font-semibold ${totalPnlBrl >= 0 ? "text-green-400" : "text-red-400"}`}>
+              {totalPnlBrl >= 0 ? "+" : ""}R$ {fmtBrl(totalPnlBrl)}
+              {totalPnlPct != null && (
+                <span className="ml-1.5 text-[11px] font-normal opacity-80">
+                  ({totalPnlPct >= 0 ? "+" : ""}{totalPnlPct.toFixed(2)}%)
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead className="border-b border-border">
+            <tr>
+              <th className={th}>Ativo</th>
+              <th className={`${th} text-right`}>Qtd.</th>
+              <th className={`${th} text-right`}>P.M.</th>
+              <th className={`${th} text-right`}>Atual</th>
+              <th className={`${th} text-right`}>Resultado R$</th>
+              <th className={`${th} text-right`}>Resultado %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.root} className="border-b border-border/40">
+                <td className={td}>
+                  <span className="font-semibold" style={{ color: r.color }}>{r.ticker}</span>
+                  <span className="ml-1.5 text-muted-foreground/60 text-[10px]">{r.name}</span>
+                </td>
+                <td className={`${td} text-right text-muted-foreground`}>{r.qty || "—"}</td>
+                <td className={`${td} text-right text-muted-foreground`}>
+                  {r.avg > 0 ? `R$ ${fmtBrl(r.avg)}` : "—"}
+                </td>
+                <td className={`${td} text-right`}>
+                  {r.currentClose != null ? `R$ ${fmtBrl(r.currentClose)}` : "—"}
+                </td>
+                <td className={`${td} text-right ${r.pnlBrl == null ? "text-muted-foreground/40" : r.pnlBrl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                  {r.pnlBrl == null ? "—" : `${r.pnlBrl >= 0 ? "+" : ""}R$ ${fmtBrl(r.pnlBrl)}`}
+                </td>
+                <td className={`${td} text-right ${r.pnlPct == null ? "text-muted-foreground/40" : r.pnlPct >= 0 ? "text-green-400" : "text-red-400"}`}>
+                  {r.pnlPct == null ? "—" : `${r.pnlPct >= 0 ? "+" : ""}${r.pnlPct.toFixed(2)}%`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -357,11 +516,11 @@ function AdvisorSummary({
 
   return (
     <ChartCard
-      title="Análise do assessor"
+      title="Análise de IA · Assessor de carteira"
       subtitle={
         data?.model
-          ? `modelo: ${data.model}${data.generatedAt ? ` · gerado em ${new Date(data.generatedAt).toLocaleString("pt-BR")}` : ""}`
-          : "análise das notícias dos últimos " + windowSize + " dias"
+          ? `${data.model} · ${windowSize}d · ${data.generatedAt ? new Date(data.generatedAt).toLocaleString("pt-BR") : "gerado agora"}`
+          : `gerado por IA com base nas notícias dos últimos ${windowSize} dias`
       }
     >
       {loading ? (
@@ -525,10 +684,13 @@ export function PortfolioView({
   const [quantities, setQuantitiesRaw] = useState<Record<string, number>>(
     () => loadQty(portfolioTickers)
   );
+  const [avgPrices, setAvgPricesRaw] = useState<Record<string, number>>(
+    () => loadAvg(portfolioTickers)
+  );
 
-  // Keep quantities in sync when tickers change
   useEffect(() => {
     setQuantitiesRaw(loadQty(portfolioTickers));
+    setAvgPricesRaw(loadAvg(portfolioTickers));
   }, [portfolioTickers.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const setQty = (root: string, qty: number) => {
@@ -537,6 +699,17 @@ export function PortfolioView({
       try {
         const stored = JSON.parse(localStorage.getItem("portfolioQuantities") ?? "{}") as Record<string, number>;
         localStorage.setItem("portfolioQuantities", JSON.stringify({ ...stored, [root]: qty }));
+      } catch {}
+      return next;
+    });
+  };
+
+  const setAvg = (root: string, avg: number) => {
+    setAvgPricesRaw((prev) => {
+      const next = { ...prev, [root]: avg };
+      try {
+        const stored = JSON.parse(localStorage.getItem("portfolioAvgPrices") ?? "{}") as Record<string, number>;
+        localStorage.setItem("portfolioAvgPrices", JSON.stringify({ ...stored, [root]: avg }));
       } catch {}
       return next;
     });
@@ -602,7 +775,7 @@ export function PortfolioView({
   const hasAnyQty = portfolioTickers.some((t) => (quantities[t] ?? 0) > 0);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 w-full min-w-0">
       {/* Header */}
       <div className="flex items-end justify-between flex-wrap gap-4">
         <div>
@@ -674,8 +847,27 @@ export function PortfolioView({
           companies={companies}
           quantities={quantities}
           onQtyChange={setQty}
+          avgPrices={avgPrices}
+          onAvgChange={setAvg}
           windowSize={windowSize}
         />
+      )}
+
+      {/* Portfolio P&L summary — shown when qty or avg price is set */}
+      {portfolioTickers.length > 0 && (
+        <PortfolioSummary
+          portfolioTickers={portfolioTickers}
+          snapshot={snapshot}
+          prices={prices}
+          quantities={quantities}
+          avgPrices={avgPrices}
+          companies={companies}
+        />
+      )}
+
+      {/* AI advisor summary — right after cards */}
+      {portfolioTickers.length > 0 && (
+        <AdvisorSummary portfolioTickers={portfolioTickers} windowSize={windowSize} />
       )}
 
       {/* Portfolio performance chart */}
@@ -704,11 +896,6 @@ export function PortfolioView({
             ))}
           </div>
         </div>
-      )}
-
-      {/* Advisor summary */}
-      {portfolioTickers.length > 0 && (
-        <AdvisorSummary portfolioTickers={portfolioTickers} windowSize={windowSize} />
       )}
 
       {/* Collapsible company selector */}
