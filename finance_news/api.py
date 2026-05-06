@@ -443,15 +443,18 @@ def get_trends_company(
 
 
 @app.get("/api/advisor/overall")
-def get_advisor_overall(window: int = 7, end: str | None = None) -> dict[str, Any]:
-    payload = get_trends_overall(window=window, end=end)
+def get_advisor_overall(window: int = 7, end: str | None = None, tickers: str | None = None) -> dict[str, Any]:
+    payload = get_trends_overall(window=window, end=end, tickers=tickers)
     end_iso = payload["window"]["end"]
     end_date = date.fromisoformat(end_iso)
     days = payload["window"]["days"]
 
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else []
+    cache_key = ",".join(sorted(ticker_list)) if ticker_list else ""
+
     with db.connect() as conn:
         cached = db.fetch_advisor_narrative(
-            conn, window_days=days, end_date=end_date, ticker_root="",
+            conn, window_days=days, end_date=end_date, ticker_root=cache_key,
         )
     if cached:
         return _serialize_narrative(cached)
@@ -470,7 +473,7 @@ def get_advisor_overall(window: int = 7, end: str | None = None) -> dict[str, An
     with db.connect() as conn:
         db.upsert_advisor_narrative(
             conn,
-            window_days=days, end_date=end_date, ticker_root="",
+            window_days=days, end_date=end_date, ticker_root=cache_key,
             paragraphs=result["paragraphs"],
             article_count=article_count,
             model=result["model"],

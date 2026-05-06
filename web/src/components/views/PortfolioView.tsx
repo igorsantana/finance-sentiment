@@ -1,20 +1,65 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Search, X } from "lucide-react";
-import { getCompanies, getPortfolioSnapshot } from "../../api";
-import type { CompanyListItem, PortfolioSnapshotItem, WindowSize } from "../../api";
+import { getCompanies, getPortfolioSnapshot, getTrendsCompany } from "../../api";
+import type {
+  CompanyListItem,
+  PortfolioSnapshotItem,
+  WindowCompany,
+  WindowSize,
+} from "../../api";
 import { usePortfolioStream } from "../../hooks/usePortfolioStream";
-import { useTrendsOverall } from "../../hooks/useTrendsOverall";
 import { useAdvisor } from "../../hooks/useAdvisor";
 import { ChartCard } from "../charts/ChartCard";
 import { EmptyTile } from "../charts/_chart-axis";
-import { WindowSentimentLine } from "../charts/WindowSentimentLine";
-import { WindowVolumeBars } from "../charts/WindowVolumeBars";
-import { SectorHeatmap } from "../charts/SectorHeatmap";
-import { SentimentByPublisher } from "../charts/SentimentByPublisher";
-import { TopTickers } from "../charts/TopTickers";
-import { TopSubjects } from "../charts/TopSubjects";
+import { SentimentVsPriceChart } from "../charts/SentimentVsPriceChart";
+import {
+  PortfolioPerformanceChart,
+  type PerformanceSeries,
+} from "../charts/PortfolioPerformanceChart";
 
 const WINDOW_OPTIONS: WindowSize[] = [3, 7, 14];
+
+// ── Financial jargon glossary ─────────────────────────────────────────────────
+
+const JARGON: Record<string, string> = {
+  volatilidade: "Medida de quanto o preço de uma ação oscila; alta volatilidade = grandes variações",
+  correlação: "Grau em que dois ativos se movem juntos — correlação positiva significa que sobem e caem ao mesmo tempo",
+  momentum: "Tendência de um ativo continuar na mesma direção de movimento recente",
+  liquidez: "Facilidade de comprar ou vender uma ação sem impactar muito o preço",
+  fundamentos: "Dados financeiros reais da empresa: lucro, receita, dívida, crescimento",
+  valuation: "Estimativa do valor justo de uma empresa comparado ao seu preço atual",
+  upside: "Potencial de valorização — quanto a ação pode subir",
+  downside: "Risco de queda — quanto a ação pode perder de valor",
+  beta: "Medida de risco relativo ao mercado: beta > 1 significa que a ação oscila mais que o índice",
+  "dividend yield": "Percentual de dividendos pagos em relação ao preço da ação",
+  "fluxo de caixa": "Dinheiro efetivamente entrando e saindo da empresa",
+  "margem": "Percentual de lucro sobre a receita — indica eficiência operacional",
+  oversold: "Ação considerada muito barata por indicadores técnicos, sugerindo possível recuperação",
+  overbought: "Ação considerada cara por indicadores técnicos, sugerindo possível queda",
+};
+
+function annotate(text: string): React.ReactNode[] {
+  const keys = Object.keys(JARGON).sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(`(${keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
+  const parts = text.split(pattern);
+  return parts.map((part, i) => {
+    const def = JARGON[part.toLowerCase()];
+    if (def) {
+      return (
+        <abbr
+          key={i}
+          title={def}
+          className="underline decoration-dotted decoration-primary/60 cursor-help text-primary/90"
+        >
+          {part}
+        </abbr>
+      );
+    }
+    return part;
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number | null | undefined, decimals = 2): string {
   if (n == null) return "—";
@@ -29,15 +74,36 @@ function formatMarketCap(v: number | null): string {
   return `R$ ${v.toLocaleString("pt-BR")}`;
 }
 
-// ── Stock summary strip ────────────────────────────────────────────────────────
+function loadQty(tickers: string[]): Record<string, number> {
+  try {
+    const raw = localStorage.getItem("portfolioQuantities");
+    const stored = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    return Object.fromEntries(tickers.map((t) => [t, stored[t] ?? 0]));
+  } catch {
+    return Object.fromEntries(tickers.map((t) => [t, 0]));
+  }
+}
 
-function StockStrip({
+// ── Stock cards ───────────────────────────────────────────────────────────────
+
+const CARD_COLORS = [
+  "hsl(186 100% 55%)",
+  "hsl(320 100% 60%)",
+  "hsl(60 100% 55%)",
+  "hsl(160 100% 45%)",
+  "hsl(280 100% 65%)",
+];
+
+function StockCards({
   portfolioTickers,
   snapshot,
   snapshotLoading,
   prices,
   flashMap,
   companies,
+  quantities,
+  onQtyChange,
+  windowSize,
 }: {
   portfolioTickers: string[];
   snapshot: PortfolioSnapshotItem[];
@@ -45,17 +111,18 @@ function StockStrip({
   prices: Record<string, { currentClose: number | null; dayOpen: number | null; asOf: string | null }>;
   flashMap: Record<string, "up" | "down">;
   companies: CompanyListItem[];
+  quantities: Record<string, number>;
+  onQtyChange: (root: string, qty: number) => void;
+  windowSize: WindowSize;
 }) {
   const snapshotMap = useMemo(
     () => Object.fromEntries(snapshot.map((s) => [s.tickerRoot, s])),
     [snapshot]
   );
 
-  if (portfolioTickers.length === 0) return null;
-
   return (
-    <div className="flex flex-wrap gap-3">
-      {portfolioTickers.map((root) => {
+    <div className="flex gap-3 overflow-x-auto pb-1">
+      {portfolioTickers.map((root, idx) => {
         const snap = snapshotMap[root];
         const live = prices[root];
         const comp = companies.find((c) => c.tickerRoot === root);
@@ -67,32 +134,37 @@ function StockStrip({
             : null;
         const positive = dayChangePct != null && dayChangePct > 0;
         const negative = dayChangePct != null && dayChangePct < 0;
+        const color = CARD_COLORS[idx % CARD_COLORS.length];
+        const windowChange = snap?.changes?.[String(windowSize) as "3" | "7" | "14"];
 
         return (
           <div
             key={root}
-            className="flex-1 min-w-[160px] rounded-lg border border-border bg-background/60 px-4 py-3 space-y-1"
+            className="w-48 shrink-0 rounded-lg border border-border bg-background/60 p-3 flex flex-col gap-2"
+            style={{ borderTopColor: color, borderTopWidth: 2 }}
           >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-mono font-semibold text-primary">
+            <div className="flex items-start justify-between gap-1">
+              <span className="text-xs font-mono font-bold" style={{ color }}>
                 {snap?.ticker ?? root}
               </span>
               {dayChangePct != null && (
                 <span
-                  className={`text-[10px] font-mono tabular-nums ${
+                  className={`text-[10px] font-mono tabular-nums shrink-0 ${
                     positive ? "text-green-400" : negative ? "text-red-400" : "text-muted-foreground"
                   }`}
                 >
-                  {positive ? "▲" : negative ? "▼" : ""} {Math.abs(dayChangePct).toFixed(2)}%
+                  {positive ? "▲" : negative ? "▼" : ""}{Math.abs(dayChangePct).toFixed(2)}%
                 </span>
               )}
             </div>
-            <div className="text-[10px] text-muted-foreground truncate">
+
+            <div className="text-[10px] text-muted-foreground truncate leading-tight">
               {comp?.shortName ?? comp?.longName ?? root}
             </div>
+
             <div className="flex items-baseline gap-1.5">
               {snapshotLoading ? (
-                <div className="h-4 w-16 bg-muted/30 rounded animate-pulse" />
+                <div className="h-4 w-14 bg-muted/30 rounded animate-pulse" />
               ) : (
                 <span
                   key={`${root}-${currentClose}`}
@@ -108,26 +180,25 @@ function StockStrip({
                 </span>
               )}
               {dayOpen != null && (
-                <span className="text-[10px] text-muted-foreground/50 font-mono">
-                  ab. {fmt(dayOpen)}
+                <span className="text-[9px] text-muted-foreground/40 font-mono">
+                  ab.{fmt(dayOpen)}
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2 pt-0.5">
+
+            <div className="flex items-center gap-2">
               {(["3", "7", "14"] as const).map((w) => {
                 const val = snap?.changes?.[w];
+                const isWindow = Number(w) === windowSize;
                 return (
-                  <span key={w} className="flex items-center gap-0.5">
-                    <span className="text-[9px] text-muted-foreground/50 font-mono">{w}d</span>
+                  <span key={w} className={`flex flex-col items-center ${isWindow ? "opacity-100" : "opacity-40"}`}>
+                    <span className="text-[8px] text-muted-foreground/60 font-mono">{w}d</span>
                     <span
-                      className={`text-[10px] font-mono tabular-nums ${
-                        val == null
-                          ? "text-muted-foreground/30"
-                          : val > 0
-                            ? "text-green-400"
-                            : val < 0
-                              ? "text-red-400"
-                              : "text-muted-foreground"
+                      className={`text-[10px] font-mono tabular-nums font-medium ${
+                        val == null ? "text-muted-foreground/30"
+                        : val > 0 ? "text-green-400"
+                        : val < 0 ? "text-red-400"
+                        : "text-muted-foreground"
                       }`}
                     >
                       {val == null ? "—" : `${val > 0 ? "+" : ""}${val.toFixed(1)}%`}
@@ -136,6 +207,28 @@ function StockStrip({
                 );
               })}
             </div>
+
+            <div className="pt-1 border-t border-border/40 flex items-center gap-1.5">
+              <span className="text-[9px] font-mono text-muted-foreground/50 shrink-0">Qtd.</span>
+              <input
+                type="number"
+                min={0}
+                value={quantities[root] || ""}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  onQtyChange(root, isNaN(v) || v < 0 ? 0 : v);
+                }}
+                placeholder="0"
+                className="w-full bg-muted/20 border border-border/60 rounded px-1.5 py-0.5 text-[10px] font-mono text-right outline-none focus:border-primary/50 tabular-nums"
+              />
+            </div>
+
+            {windowChange != null && quantities[root] > 0 && currentClose != null && (
+              <div className="text-[9px] font-mono text-muted-foreground/50 text-right">
+                {(windowChange / 100 * quantities[root] * currentClose / (1 + windowChange / 100)) >= 0 ? "+" : ""}
+                R$ {((windowChange / 100) * (quantities[root] * currentClose / (1 + windowChange / 100))).toFixed(0)} no período
+              </div>
+            )}
           </div>
         );
       })}
@@ -143,138 +236,154 @@ function StockStrip({
   );
 }
 
-// ── Group analytics ────────────────────────────────────────────────────────────
+// ── Portfolio performance chart ───────────────────────────────────────────────
 
-function GroupAnalytics({ portfolioTickers }: { portfolioTickers: string[] }) {
-  const [windowSize, setWindowSize] = useState<WindowSize>(7);
+function PortfolioPerformance({
+  portfolioTickers,
+  windowSize,
+  quantities,
+}: {
+  portfolioTickers: string[];
+  windowSize: WindowSize;
+  quantities: Record<string, number>;
+}) {
+  const [companyData, setCompanyData] = useState<Record<string, WindowCompany>>({});
+  const [loading, setLoading] = useState(false);
 
-  const { data, loading, error } = useTrendsOverall(windowSize, undefined, portfolioTickers);
-  const advisor = useAdvisor("overall", windowSize);
+  const tickersKey = portfolioTickers.join(",");
 
-  const endLabel = data
-    ? `${data.window.start} – ${data.window.end}`
-    : null;
+  useEffect(() => {
+    if (portfolioTickers.length === 0) { setCompanyData({}); return; }
+    const ctrl = new AbortController();
+    setLoading(true);
+    Promise.all(
+      portfolioTickers.map((t) =>
+        getTrendsCompany(t, windowSize, undefined, ctrl.signal).then((d) => ({ t, d }))
+      )
+    )
+      .then((results) => {
+        if (ctrl.signal.aborted) return;
+        setCompanyData(Object.fromEntries(results.map(({ t, d }) => [t, d])));
+      })
+      .catch(() => {})
+      .finally(() => { if (!ctrl.signal.aborted) setLoading(false); });
+    return () => ctrl.abort();
+  }, [tickersKey, windowSize]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const series: PerformanceSeries[] = useMemo(
+    () =>
+      portfolioTickers
+        .map((t, i) => {
+          const d = companyData[t];
+          if (!d) return null;
+          return {
+            ticker: t,
+            color: CARD_COLORS[i % CARD_COLORS.length],
+            points: d.daily.map((row) => ({ date: row.date, close: row.close })),
+          };
+        })
+        .filter((s): s is PerformanceSeries => s !== null),
+    [companyData, portfolioTickers]
+  );
+
+  if (loading) {
+    return <div className="h-[220px] bg-muted/20 rounded animate-pulse" />;
+  }
+
+  if (series.length === 0) return null;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70">
-            Análise do grupo
-          </span>
-          {endLabel && (
-            <span className="ml-2 text-[10px] font-mono text-muted-foreground/50">{endLabel}</span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70">Janela</span>
-          <div className="inline-flex border border-border rounded-md p-0.5 bg-muted/30">
-            {WINDOW_OPTIONS.map((n) => {
-              const isActive = n === windowSize;
-              return (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => setWindowSize(n)}
-                  className={`px-3 py-1.5 text-xs font-mono uppercase tracking-widest rounded-sm transition-all ${
-                    isActive
-                      ? "bg-primary/15 text-primary border neon-edge"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {n}d
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard
-          title="Sentimento ao longo do período"
-          subtitle={data ? `${data.counts.total} artigos` : undefined}
-        >
-          <Body loading={loading} error={error} hasData={!!data} h={56}>
-            {data && <WindowSentimentLine data={data.daily} />}
-          </Body>
-        </ChartCard>
-        <ChartCard title="Volume diário">
-          <Body loading={loading} error={error} hasData={!!data} h={56}>
-            {data && <WindowVolumeBars data={data.daily} />}
-          </Body>
-        </ChartCard>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard title="Setores">
-          <Body loading={loading} error={error} hasData={!!data} h={48}>
-            {data && <SectorHeatmap data={{ sectorMatrix: data.sectorMatrix }} />}
-          </Body>
-        </ChartCard>
-        <ChartCard title="Veículos">
-          <Body loading={loading} error={error} hasData={!!data} h={48}>
-            {data && (
-              <SentimentByPublisher
-                data={{ sentimentByPublisher: data.sentimentByPublisher }}
-              />
-            )}
-          </Body>
-        </ChartCard>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard title="Tickers citados">
-          <Body loading={loading} error={error} hasData={!!data} h={48}>
-            {data && <TopTickers data={{ topTickers: data.topTickers }} />}
-          </Body>
-        </ChartCard>
-        <ChartCard title="Assuntos">
-          <Body loading={loading} error={error} hasData={!!data} h={48}>
-            {data && <TopSubjects data={{ topSubjects: data.topSubjects }} />}
-          </Body>
-        </ChartCard>
-      </div>
-
-      <AdvisorCard advisor={advisor} />
-    </div>
+    <PortfolioPerformanceChart series={series} quantities={quantities} mode="pct" />
   );
 }
 
-// ── Advisor card ───────────────────────────────────────────────────────────────
+// ── Per-company sentiment × price charts ──────────────────────────────────────
 
-function AdvisorCard({ advisor }: { advisor: ReturnType<typeof useAdvisor> }) {
-  const { data, loading, error, unavailable } = advisor;
+function CompanyChart({
+  ticker,
+  windowSize,
+}: {
+  ticker: string;
+  windowSize: WindowSize;
+}) {
+  const [data, setData] = useState<WindowCompany | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setLoading(true);
+    setData(null);
+    getTrendsCompany(ticker, windowSize, undefined, ctrl.signal)
+      .then((d) => { if (!ctrl.signal.aborted) { setData(d); setLoading(false); } })
+      .catch((e: unknown) => {
+        if (ctrl.signal.aborted) return;
+        setError(e instanceof Error ? e : new Error(String(e)));
+        setLoading(false);
+      });
+    return () => ctrl.abort();
+  }, [ticker, windowSize]);
+
+  const corrLabel =
+    data?.correlation == null ? undefined
+    : `r = ${data.correlation >= 0 ? "+" : ""}${data.correlation.toFixed(2)}`;
+
+  return (
+    <ChartCard title={ticker} subtitle={corrLabel}>
+      {loading ? (
+        <div className="h-48 bg-muted/20 rounded animate-pulse" />
+      ) : error ? (
+        <EmptyTile label="sem dados" />
+      ) : data ? (
+        <SentimentVsPriceChart data={{ points: data.daily }} />
+      ) : (
+        <EmptyTile />
+      )}
+    </ChartCard>
+  );
+}
+
+// ── Advisor summary ───────────────────────────────────────────────────────────
+
+function AdvisorSummary({
+  portfolioTickers,
+  windowSize,
+}: {
+  portfolioTickers: string[];
+  windowSize: WindowSize;
+}) {
+  const advisor = useAdvisor("overall", windowSize, undefined, portfolioTickers);
+  const { data, loading, unavailable, error } = advisor;
+
   return (
     <ChartCard
       title="Análise do assessor"
       subtitle={
         data?.model
-          ? `modelo: ${data.model}${
-              data.generatedAt
-                ? ` · ${new Date(data.generatedAt).toLocaleString("pt-BR")}`
-                : ""
-            }`
-          : undefined
+          ? `modelo: ${data.model}${data.generatedAt ? ` · gerado em ${new Date(data.generatedAt).toLocaleString("pt-BR")}` : ""}`
+          : "análise das notícias dos últimos " + windowSize + " dias"
       }
     >
       {loading ? (
         <div className="space-y-3 animate-pulse">
-          <div className="h-3 w-full bg-muted/30 rounded" />
-          <div className="h-3 w-11/12 bg-muted/30 rounded" />
-          <div className="h-3 w-3/4 bg-muted/30 rounded" />
-          <div className="h-3 w-5/6 bg-muted/30 rounded mt-4" />
-          <div className="h-3 w-2/3 bg-muted/30 rounded" />
+          {[1, 0.92, 0.75, null, 0.88, 0.66].map((w, i) =>
+            w == null ? <div key={i} className="h-2" /> : (
+              <div key={i} className="h-3 bg-muted/30 rounded" style={{ width: `${w * 100}%` }} />
+            )
+          )}
         </div>
       ) : unavailable ? (
         <EmptyTile label="análise temporariamente indisponível" />
       ) : error ? (
         <EmptyTile label={`erro: ${error.message}`} />
       ) : data ? (
-        <div className="space-y-4 text-sm font-mono leading-relaxed">
+        <div className="space-y-4 text-sm font-mono leading-relaxed text-foreground/90">
           {data.paragraphs.map((p, i) => (
-            <p key={i}>{p}</p>
+            <p key={i}>{annotate(p)}</p>
           ))}
+          <p className="text-[10px] text-muted-foreground/40 pt-1">
+            Termos sublinhados têm explicações — passe o mouse para ver.
+          </p>
         </div>
       ) : (
         <EmptyTile />
@@ -283,28 +392,7 @@ function AdvisorCard({ advisor }: { advisor: ReturnType<typeof useAdvisor> }) {
   );
 }
 
-// ── Body helper ────────────────────────────────────────────────────────────────
-
-function Body({
-  loading,
-  error,
-  hasData,
-  h,
-  children,
-}: {
-  loading: boolean;
-  error: Error | null;
-  hasData: boolean;
-  h: number;
-  children: React.ReactNode;
-}) {
-  if (loading) return <div className="bg-muted/20 rounded animate-pulse" style={{ height: h * 4 }} />;
-  if (error) return <EmptyTile label={`erro: ${error.message}`} />;
-  if (!hasData) return <EmptyTile />;
-  return <>{children}</>;
-}
-
-// ── Company selection table ────────────────────────────────────────────────────
+// ── Company selection table ───────────────────────────────────────────────────
 
 function CompanyTable({
   companies,
@@ -345,7 +433,9 @@ function CompanyTable({
         <span className="text-xs font-mono uppercase tracking-widest text-muted-foreground/70">
           Selecionar empresas
           {portfolioTickers.length > 0 && (
-            <span className="ml-2 text-primary/70">{portfolioTickers.length} selecionada{portfolioTickers.length > 1 ? "s" : ""}</span>
+            <span className="ml-2 text-primary/70">
+              {portfolioTickers.length} selecionada{portfolioTickers.length > 1 ? "s" : ""}
+            </span>
           )}
         </span>
         <ChevronDown
@@ -375,7 +465,6 @@ function CompanyTable({
               )}
             </div>
           </div>
-
           <div className="max-h-72 overflow-y-auto border-t border-border">
             {companiesLoading ? (
               <div className="px-4 py-8 text-center text-xs font-mono text-muted-foreground animate-pulse">
@@ -399,9 +488,7 @@ function CompanyTable({
                         key={c.tickerRoot}
                         onClick={() => onToggle(c.tickerRoot)}
                         className={`cursor-pointer border-b border-border/40 transition-colors ${
-                          selected
-                            ? "bg-primary/10 border-l-2 border-l-primary"
-                            : "hover:bg-muted/30"
+                          selected ? "bg-primary/10 border-l-2 border-l-primary" : "hover:bg-muted/30"
                         }`}
                       >
                         <td className={`${td} text-primary font-semibold`}>{c.ticker}</td>
@@ -425,7 +512,7 @@ function CompanyTable({
   );
 }
 
-// ── Root ───────────────────────────────────────────────────────────────────────
+// ── Root ──────────────────────────────────────────────────────────────────────
 
 export function PortfolioView({
   portfolioTickers,
@@ -434,6 +521,27 @@ export function PortfolioView({
   portfolioTickers: string[];
   onPortfolioChange: (tickers: string[]) => void;
 }) {
+  const [windowSize, setWindowSize] = useState<WindowSize>(7);
+  const [quantities, setQuantitiesRaw] = useState<Record<string, number>>(
+    () => loadQty(portfolioTickers)
+  );
+
+  // Keep quantities in sync when tickers change
+  useEffect(() => {
+    setQuantitiesRaw(loadQty(portfolioTickers));
+  }, [portfolioTickers.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const setQty = (root: string, qty: number) => {
+    setQuantitiesRaw((prev) => {
+      const next = { ...prev, [root]: qty };
+      try {
+        const stored = JSON.parse(localStorage.getItem("portfolioQuantities") ?? "{}") as Record<string, number>;
+        localStorage.setItem("portfolioQuantities", JSON.stringify({ ...stored, [root]: qty }));
+      } catch {}
+      return next;
+    });
+  };
+
   const [companies, setCompanies] = useState<CompanyListItem[]>([]);
   const [companiesLoading, setCompaniesLoading] = useState(true);
   const [snapshot, setSnapshot] = useState<PortfolioSnapshotItem[]>([]);
@@ -473,10 +581,7 @@ export function PortfolioView({
   }, []);
 
   useEffect(() => {
-    if (portfolioTickers.length === 0) {
-      setSnapshot([]);
-      return;
-    }
+    if (portfolioTickers.length === 0) { setSnapshot([]); return; }
     const ctrl = new AbortController();
     setSnapshotLoading(true);
     getPortfolioSnapshot(portfolioTickers, [3, 7, 14], ctrl.signal)
@@ -494,9 +599,12 @@ export function PortfolioView({
     }
   };
 
+  const hasAnyQty = portfolioTickers.some((t) => (quantities[t] ?? 0) > 0);
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="flex items-end justify-between flex-wrap gap-4">
         <div>
           <h2 className="font-mono uppercase tracking-[0.25em] text-xs text-muted-foreground mb-1">
             Carteira
@@ -507,39 +615,103 @@ export function PortfolioView({
               : `${portfolioTickers.length} empresa${portfolioTickers.length > 1 ? "s" : ""}`}
           </p>
         </div>
-        {portfolioTickers.length > 0 && (
-          <div className="flex items-center gap-2 text-[10px] font-mono text-muted-foreground/60">
-            {connected ? (
-              <span className="relative flex h-2 w-2">
-                <span
-                  className="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"
-                  style={{ animation: "live-ring 1.5s ease-out infinite" }}
-                />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-green-400 shadow-[0_0_6px_theme(colors.green.400)]" />
+
+        <div className="flex items-center gap-4">
+          {portfolioTickers.length > 0 && (
+            <div className="flex items-center gap-2 text-[10px] font-mono text-muted-foreground/60">
+              {connected ? (
+                <span className="relative flex h-2 w-2">
+                  <span
+                    className="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"
+                    style={{ animation: "live-ring 1.5s ease-out infinite" }}
+                  />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-green-400 shadow-[0_0_6px_theme(colors.green.400)]" />
+                </span>
+              ) : (
+                <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+              )}
+              {connected ? "ao vivo" : "conectando…"}
+            </div>
+          )}
+
+          {portfolioTickers.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70">
+                Janela
               </span>
-            ) : (
-              <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
-            )}
-            {connected ? "ao vivo" : "conectando…"}
-          </div>
-        )}
+              <div className="inline-flex border border-border rounded-md p-0.5 bg-muted/30">
+                {WINDOW_OPTIONS.map((n) => {
+                  const isActive = n === windowSize;
+                  return (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setWindowSize(n)}
+                      className={`px-3 py-1.5 text-xs font-mono uppercase tracking-widest rounded-sm transition-all ${
+                        isActive
+                          ? "bg-primary/15 text-primary border neon-edge"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {n}d
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
+      {/* Stock cards — fixed width, no grow */}
       {portfolioTickers.length > 0 && (
-        <StockStrip
+        <StockCards
           portfolioTickers={portfolioTickers}
           snapshot={snapshot}
           snapshotLoading={snapshotLoading}
           prices={prices}
           flashMap={flashMap}
           companies={companies}
+          quantities={quantities}
+          onQtyChange={setQty}
+          windowSize={windowSize}
         />
       )}
 
+      {/* Portfolio performance chart */}
       {portfolioTickers.length > 0 && (
-        <GroupAnalytics portfolioTickers={portfolioTickers} />
+        <ChartCard
+          title="Evolução da carteira"
+          subtitle={hasAnyQty ? "% de variação por empresa · carteira ponderada (tracejado)" : "% de variação por empresa"}
+        >
+          <PortfolioPerformance
+            portfolioTickers={portfolioTickers}
+            windowSize={windowSize}
+            quantities={quantities}
+          />
+        </ChartCard>
       )}
 
+      {/* Per-company sentiment × price charts */}
+      {portfolioTickers.length > 0 && (
+        <div>
+          <p className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 mb-3">
+            Sentimento × Cotação
+          </p>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {portfolioTickers.map((ticker) => (
+              <CompanyChart key={ticker} ticker={ticker} windowSize={windowSize} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Advisor summary */}
+      {portfolioTickers.length > 0 && (
+        <AdvisorSummary portfolioTickers={portfolioTickers} windowSize={windowSize} />
+      )}
+
+      {/* Collapsible company selector */}
       <CompanyTable
         companies={companies}
         companiesLoading={companiesLoading}

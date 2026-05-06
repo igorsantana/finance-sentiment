@@ -21,6 +21,7 @@ export function useAdvisor(
   scope: AdvisorScope,
   window: WindowSize,
   end?: string,
+  tickers?: string[],
 ): UseAdvisorState {
   const [state, setState] = useState<UseAdvisorState>({
     data: null,
@@ -30,11 +31,12 @@ export function useAdvisor(
   });
 
   const key = scopeKey(scope);
+  const tickersKey = tickers?.join(",") ?? "";
 
   useEffect(() => {
     const ctrl = new AbortController();
     setState({ data: null, loading: true, error: null, unavailable: false });
-    getAdvisor(scope, window, end, ctrl.signal)
+    getAdvisor(scope, window, end, ctrl.signal, tickers?.length ? tickers : undefined)
       .then((data) => {
         if (ctrl.signal.aborted) return;
         setState({
@@ -55,9 +57,8 @@ export function useAdvisor(
         });
       });
     return () => ctrl.abort();
-    // scope is reduced to a stable string key for the deps array
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, window, end]);
+  }, [key, window, end, tickersKey]);
 
   return state;
 }
