@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AdminView } from "./components/views/AdminView";
 import { AnalysisView } from "./components/views/AnalysisView";
 import { PipelineView } from "./components/views/PipelineView";
 import { PortfolioView } from "./components/views/PortfolioView";
@@ -38,10 +39,32 @@ export default function App() {
   const [portfolioTickers, setPortfolioTickersRaw] = useState<string[]>(
     () => loadStorage<string[]>("portfolioTickers", [])
   );
+  const [quantities, setQuantitiesRaw] = useState<Record<string, number>>(
+    () => loadStorage<Record<string, number>>("portfolioQuantities", {})
+  );
+  const [avgPrices, setAvgPricesRaw] = useState<Record<string, number>>(
+    () => loadStorage<Record<string, number>>("portfolioAvgPrices", {})
+  );
 
   const setPortfolioTickers = (tickers: string[]) => {
     setPortfolioTickersRaw(tickers);
     localStorage.setItem("portfolioTickers", JSON.stringify(tickers));
+  };
+
+  const setQty = (root: string, qty: number) => {
+    setQuantitiesRaw((prev) => {
+      const next = { ...prev, [root]: qty };
+      localStorage.setItem("portfolioQuantities", JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const setAvg = (root: string, avg: number) => {
+    setAvgPricesRaw((prev) => {
+      const next = { ...prev, [root]: avg };
+      localStorage.setItem("portfolioAvgPrices", JSON.stringify(next));
+      return next;
+    });
   };
 
   const refreshDates = () =>
@@ -86,13 +109,23 @@ export default function App() {
         onSelectReport={handleSelectReport}
         onSelectAnalysis={() => setSection("analysis")}
         onSelectPortfolio={() => setSection("portfolio")}
+        onSelectAdmin={() => setSection("admin")}
       />
 
       <div className="flex flex-col min-h-screen overflow-x-hidden">
         <TopBar running={running} stage={stage} stageProgress={stageProgress} />
 
         <div className="flex-1 px-8 py-8 min-w-0">
-          {section === "pipeline" ? (
+          {section === "admin" ? (
+            <AdminView
+              portfolioTickers={portfolioTickers}
+              onPortfolioChange={setPortfolioTickers}
+              quantities={quantities}
+              onQtyChange={setQty}
+              avgPrices={avgPrices}
+              onAvgChange={setAvg}
+            />
+          ) : section === "pipeline" ? (
             <PipelineView
               runDate={runDate}
               onRunDateChange={setRunDate}
@@ -107,7 +140,8 @@ export default function App() {
           ) : section === "portfolio" ? (
             <PortfolioView
               portfolioTickers={portfolioTickers}
-              onPortfolioChange={setPortfolioTickers}
+              quantities={quantities}
+              avgPrices={avgPrices}
             />
           ) : (
             <ReportView
