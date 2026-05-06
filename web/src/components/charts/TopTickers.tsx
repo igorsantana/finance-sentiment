@@ -8,13 +8,17 @@ import {
 } from "recharts";
 import type { ReportPayload } from "../../api";
 import { ChartCard } from "./ChartCard";
+import { SENTIMENT_COLORS, SENTIMENT_LABEL_PT, type SentimentTone } from "../../lib/sentiment";
 import {
   EmptyTile,
+  SentimentBreakdown,
   TooltipShell,
   tooltipCursor,
   xAxisDefaults,
   yAxisDefaults,
 } from "./_chart-axis";
+
+const STACK: SentimentTone[] = ["positive", "neutral", "negative"];
 
 type Datum = ReportPayload["topTickers"][number];
 
@@ -29,10 +33,9 @@ function TickerTooltip({
   const d = payload[0].payload;
   return (
     <TooltipShell>
-      <div className="uppercase tracking-widest text-muted-foreground/80">
-        {d.ticker}
-      </div>
-      <div className="mt-1 tabular-nums text-foreground">{d.count} menções</div>
+      <div className="uppercase tracking-widest text-muted-foreground/80">{d.ticker}</div>
+      <SentimentBreakdown {...d} />
+      <div className="mt-1 text-muted-foreground/80">total {d.total}</div>
     </TooltipShell>
   );
 }
@@ -49,7 +52,7 @@ export function TopTickers({
       {rows.length === 0 ? (
         <EmptyTile />
       ) : (
-        <div style={{ height: Math.max(rows.length * 22, 280) }}>
+        <div style={{ height: Math.max(rows.length * 24, 280) }}>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 16 }}>
               <XAxis type="number" {...xAxisDefaults} />
@@ -60,11 +63,16 @@ export function TopTickers({
                 {...yAxisDefaults}
               />
               <Tooltip cursor={tooltipCursor} content={<TickerTooltip />} />
-              <Bar
-                dataKey="count"
-                fill="hsl(var(--accent))"
-                radius={[0, 4, 4, 0]}
-              />
+              {STACK.map((tone) => (
+                <Bar
+                  key={tone}
+                  dataKey={tone}
+                  stackId="s"
+                  fill={SENTIMENT_COLORS[tone]}
+                  name={SENTIMENT_LABEL_PT[tone]}
+                  radius={tone === "negative" ? [0, 4, 4, 0] : undefined}
+                />
+              ))}
             </BarChart>
           </ResponsiveContainer>
         </div>

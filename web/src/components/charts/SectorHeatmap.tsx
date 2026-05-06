@@ -5,11 +5,11 @@ import { SENTIMENT_LABEL_PT, type SentimentTone } from "../../lib/sentiment";
 const COLS: SentimentTone[] = ["positive", "neutral", "negative"];
 
 const ANCHORS: Array<{ stop: number; h: number; s: number; l: number }> = [
-  { stop: -1, h: 320, s: 100, l: 60 },
-  { stop: -0.5, h: 290, s: 55, l: 58 },
-  { stop: 0, h: 240, s: 10, l: 60 },
-  { stop: 0.5, h: 200, s: 55, l: 56 },
-  { stop: 1, h: 160, s: 100, l: 55 },
+  { stop: -1,   h: 0,   s: 90, l: 52 },
+  { stop: -0.4, h: 25,  s: 80, l: 52 },
+  { stop: 0,    h: 220, s: 20, l: 42 },
+  { stop: 0.4,  h: 155, s: 70, l: 40 },
+  { stop: 1,    h: 142, s: 90, l: 38 },
 ];
 
 function tiltColor(tilt: number, alpha = 1): string {
@@ -88,7 +88,7 @@ export function SectorHeatmap({
                   className="text-center font-mono text-xs tabular-nums rounded-sm py-1.5 transition hover:scale-[1.04] hover:neon-edge"
                   style={{
                     background: bg,
-                    color: "hsl(240 18% 6%)",
+                    color: "hsl(0 0% 95%)",
                   }}
                 >
                   {row[tone]}

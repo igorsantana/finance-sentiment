@@ -1,5 +1,4 @@
 import * as React from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { cn } from "../../lib/utils";
 
 export type ChartCardProps = {
@@ -18,19 +17,19 @@ export function ChartCard({
   children,
 }: ChartCardProps) {
   return (
-    <Card className={cn("border-border/60", className)}>
-      <CardHeader className="pb-2 flex flex-row items-center justify-between">
-        <CardTitle className="text-base font-mono uppercase tracking-widest">
+    <div className={cn("", className)}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-mono uppercase tracking-widest text-foreground/70">
           {title}
-        </CardTitle>
+        </span>
         {subtitle ? (
-          <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70">
+          <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/60">
             {subtitle}
           </span>
         ) : null}
-      </CardHeader>
-      <div className="scanline h-px w-full" />
-      <CardContent className={cn("pt-4", contentClassName)}>{children}</CardContent>
-    </Card>
+      </div>
+      <div className="border-b border-border/40 mb-4" />
+      <div className={cn("", contentClassName)}>{children}</div>
+    </div>
   );
 }

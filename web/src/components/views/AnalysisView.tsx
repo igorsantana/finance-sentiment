@@ -40,7 +40,7 @@ export function AnalysisView() {
     return overall7.topTickers.map((t) => ({
       value: t.ticker,
       label: t.ticker,
-      hint: `${t.count} art.`,
+      hint: `${t.total} art.`,
     }));
   }, [overall7]);
 
@@ -106,6 +106,8 @@ export function AnalysisView() {
         </div>
       </div>
 
+      <AdvisorCard advisor={advisor} />
+
       {scope === "overall" ? (
         <OverallPanel
           data={overallData}
@@ -120,8 +122,6 @@ export function AnalysisView() {
           hasSelection={!!selectedTicker}
         />
       )}
-
-      <AdvisorCard advisor={advisor} />
     </div>
   );
 }
@@ -232,17 +232,27 @@ function CompanyPanel({
       </ChartCard>
     );
   }
+
   const corrLabel =
     data?.correlation === null || data?.correlation === undefined
       ? null
       : `r = ${data.correlation >= 0 ? "+" : ""}${data.correlation.toFixed(2)}`;
 
+  const latestClose = data?.daily
+    .map((d) => d.close)
+    .filter((v): v is number => v !== null)
+    .slice(-1)[0] ?? null;
+
+  const priceSubtitle = [
+    corrLabel,
+    latestClose !== null ? `último fechamento R$ ${latestClose.toFixed(2)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ") || undefined;
+
   return (
     <div className="space-y-6">
-      <ChartCard
-        title="Sentimento × Cotação"
-        subtitle={corrLabel ?? undefined}
-      >
+      <ChartCard title="Sentimento × Cotação" subtitle={priceSubtitle}>
         <Body loading={loading} error={error} hasData={!!data} h={72}>
           {data && <SentimentVsPriceChart data={{ points: data.daily }} />}
         </Body>
@@ -257,15 +267,7 @@ function CompanyPanel({
           <Body loading={loading} error={error} hasData={!!data} h={48}>
             {data && (
               <SentimentByPublisher
-                data={{
-                  sentimentByPublisher: data.topPublishers.map((p) => ({
-                    site: p.site,
-                    positive: 0,
-                    neutral: 0,
-                    negative: 0,
-                    total: p.count,
-                  })),
-                }}
+                data={{ sentimentByPublisher: data.sentimentByPublisher }}
               />
             )}
           </Body>

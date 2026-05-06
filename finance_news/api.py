@@ -63,6 +63,7 @@ class RunChannel:
     finished: bool = False
     status: str = "running"
     error: str | None = None
+    stop_event: threading.Event = field(default_factory=threading.Event)
 
     def emit(self, ev: dict[str, Any]) -> None:
         with self.cond:
@@ -139,6 +140,10 @@ def _run_in_thread(rid: str, ch: RunChannel, target_date: date, kind: str = "ful
             "total": total,
         })
 
+    def _check_stop() -> None:
+        if ch.stop_event.is_set():
+            raise InterruptedError("cancelled")
+
     with _capture_logs(rid, ch):
         log.info("Starting %s run for %s", kind, target_date)
         try:
@@ -149,7 +154,19 @@ def _run_in_thread(rid: str, ch: RunChannel, target_date: date, kind: str = "ful
             elif kind == "summarize":
                 summary = run_summarize(target_date=target_date, progress=on_progress, setup_logging=False)
             else:
-                summary = run_full(target_date=target_date, progress=on_progress, setup_logging=False)
+                ingest_s = run_ingest(target_date=target_date, progress=on_progress, setup_logging=False)
+                _check_stop()
+                extract_s = run_extract(target_date=target_date, progress=on_progress, setup_logging=False)
+                _check_stop()
+                summarize_s = run_summarize(target_date=target_date, progress=on_progress, setup_logging=False)
+                from finance_news.pipeline import RunSummary
+                summary = RunSummary(
+                    kind="full", run_id=ingest_s.run_id,
+                    started_at=ingest_s.started_at,
+                    n_fetched=ingest_s.n_fetched + extract_s.n_fetched,
+                    n_extracted=extract_s.n_extracted + summarize_s.n_extracted,
+                    status="ok",
+                )
 
             ch.status = "ok"
             ch.emit({
@@ -157,6 +174,10 @@ def _run_in_thread(rid: str, ch: RunChannel, target_date: date, kind: str = "ful
                 "n_fetched": summary.n_fetched,
                 "n_extracted": summary.n_extracted,
             })
+        except InterruptedError:
+            ch.status = "cancelled"
+            log.info("Run %s was cancelled by the user.", rid)
+            ch.emit({"type": "error", "message": "Execução cancelada pelo usuário."})
         except Exception as e:
             ch.status = "error"
             ch.error = repr(e)
@@ -223,6 +244,17 @@ def get_run(run_id: str) -> dict[str, Any]:
     }
 
 
+@app.delete("/api/runs/{run_id}")
+def cancel_run(run_id: str) -> dict[str, str]:
+    ch = _channels.get(run_id)
+    if ch is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if ch.finished:
+        raise HTTPException(status_code=409, detail="run already finished")
+    ch.stop_event.set()
+    return {"status": "cancelling"}
+
+
 @app.get("/api/runs/{run_id}/stream")
 async def stream_run(run_id: str) -> StreamingResponse:
     ch = _channels.get(run_id)
@@ -265,6 +297,90 @@ def _wait_events(ch: RunChannel, idx: int, timeout: float) -> tuple[list[dict[st
         return ch.events[idx:], ch.finished
 
 
+@app.get("/api/calendar")
+def get_calendar(
+    month: str,
+    tickers: str = Query(default=""),
+    quantities: str = Query(default=""),
+) -> dict[str, Any]:
+    """Calendar metadata for a given month.
+
+    ``month`` must be ``YYYY-MM``.  Returns per-day entries covering every day
+    in the month, including weekends.  Optional ``tickers`` (comma-separated)
+    and ``quantities`` (comma-separated floats) enable per-day portfolio return.
+    """
+    import calendar as _calendar
+    try:
+        year, mo = (int(p) for p in month.split("-"))
+        _, last_day = _calendar.monthrange(year, mo)
+        start = date(year, mo, 1)
+        end = date(year, mo, last_day)
+    except Exception:
+        raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+
+    ticker_list = [t.strip() for t in tickers.split(",") if t.strip()]
+    try:
+        qty_list = [float(q) for q in quantities.split(",") if q.strip()]
+    except ValueError:
+        qty_list = []
+    while len(qty_list) < len(ticker_list):
+        qty_list.append(1.0)
+
+    fetch_days = (end - start).days + 10
+    with db.connect() as conn:
+        sentiment_rows = db.fetch_calendar_sentiment(conn, start=start, end=end)
+        ibov_bars = fetch_ohlc_trailing(conn, "^BVSP", end, days=fetch_days)
+        portfolio_bars: dict[str, dict] = {}
+        for ticker in ticker_list:
+            bars = fetch_ohlc_trailing(conn, ticker, end, days=fetch_days)
+            portfolio_bars[ticker] = {b["bar_date"]: b for b in bars}
+
+    by_day = {r["day"]: r for r in sentiment_rows}
+    ibov_by_day = {b["bar_date"]: b for b in ibov_bars}
+
+    days = []
+    cur = start
+    while cur <= end:
+        s = by_day.get(cur)
+        ibov = ibov_by_day.get(cur)
+        pos = int(s["positive"]) if s else 0
+        neg = int(s["negative"]) if s else 0
+        total = int(s["article_count"]) if s else 0
+        sentiment_net = (pos - neg) / total if total else None
+        ibov_change = (
+            float(ibov["close"] - ibov["open"]) / float(ibov["open"]) * 100
+            if ibov and ibov.get("open") and float(ibov["open"]) != 0
+            else None
+        )
+
+        # Portfolio return: quantity-weighted average of intraday returns
+        portfolio_change: float | None = None
+        if ticker_list:
+            weighted, weight_sum = 0.0, 0.0
+            for ticker, qty in zip(ticker_list, qty_list):
+                bar = portfolio_bars.get(ticker, {}).get(cur)
+                if bar and bar.get("open") and float(bar["open"]) != 0:
+                    day_ret = float(bar["close"] - bar["open"]) / float(bar["open"])
+                    weighted += day_ret * qty
+                    weight_sum += qty
+            if weight_sum > 0:
+                portfolio_change = weighted / weight_sum * 100
+
+        days.append({
+            "date": cur.isoformat(),
+            "has_articles": bool(s),
+            "article_count": total,
+            "sentiment_net": round(sentiment_net, 4) if sentiment_net is not None else None,
+            "positive_pct": round(pos / total * 100, 1) if total else None,
+            "negative_pct": round(neg / total * 100, 1) if total else None,
+            "ibovespa_change_pct": round(ibov_change, 2) if ibov_change is not None else None,
+            "portfolio_change_pct": round(portfolio_change, 2) if portfolio_change is not None else None,
+        })
+        cur = cur.fromordinal(cur.toordinal() + 1)
+
+    return {"month": month, "days": days}
+
+
 @app.get("/api/dates")
 def list_dates() -> dict[str, list[str]]:
     """Dates that have at least one article (in America/Sao_Paulo)."""
@@ -300,7 +416,7 @@ def get_report(report_date: str) -> dict[str, Any]:
     return payload
 
 
-_WINDOW_OPTIONS = (3, 7, 14)
+_WINDOW_OPTIONS = (1, 3, 7, 14)
 
 
 def _subtract_business_days(d: date, n: int) -> date:
@@ -421,7 +537,8 @@ def get_trends_company(
             "close": close,
         })
 
-    publisher_counts: dict[str, int] = {}
+    from collections import Counter as _Counter, defaultdict as _defaultdict
+    publisher_sentiment: dict[str, _Counter] = _defaultdict(_Counter)
     subject_counts: dict[str, int] = {}
     by_sentiment = {"positive": 0, "neutral": 0, "negative": 0}
     for a in articles:
@@ -429,14 +546,26 @@ def get_trends_company(
         if sent in by_sentiment:
             by_sentiment[sent] += 1
         site = a.get("site")
-        if site:
-            publisher_counts[site] = publisher_counts.get(site, 0) + 1
+        if site and sent in by_sentiment:
+            publisher_sentiment[site][sent] += 1
+        elif site:
+            publisher_sentiment[site]  # ensure key exists
         for sub in (a.get("subjects") or []):
             subject_counts[sub] = subject_counts.get(sub, 0) + 1
 
-    top_publishers = sorted(
-        ({"site": k, "count": v} for k, v in publisher_counts.items()),
-        key=lambda x: x["count"], reverse=True,
+    sentiment_by_publisher = sorted(
+        [
+            {
+                "site": site,
+                "positive": c["positive"],
+                "neutral": c["neutral"],
+                "negative": c["negative"],
+                "total": c["positive"] + c["neutral"] + c["negative"],
+            }
+            for site, c in publisher_sentiment.items()
+        ],
+        key=lambda x: x["total"],
+        reverse=True,
     )[:10]
     top_subjects = sorted(
         ({"subject": k, "count": v} for k, v in subject_counts.items()),
@@ -453,7 +582,7 @@ def get_trends_company(
         },
         "counts": {"total": len(articles), "bySentiment": by_sentiment},
         "daily": daily,
-        "topPublishers": top_publishers,
+        "sentimentByPublisher": sentiment_by_publisher,
         "topSubjects": top_subjects,
         "correlation": _pearson(closes, nets),
     }

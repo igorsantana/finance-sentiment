@@ -42,13 +42,16 @@ def build_report_payload(
         if s in by_sentiment:
             by_sentiment[s] += 1
 
+    # keyed by ticker_root so each company appears once even with multiple tickers
     company_counts: dict[str, Counter] = defaultdict(Counter)
+    company_names: dict[str, str] = {}  # ticker_root → short_name
     publisher_counts: dict[str, Counter] = defaultdict(Counter)
     sector_counts: dict[str, Counter] = defaultdict(Counter)
     sector_company_counts: dict[str, Counter] = defaultdict(Counter)
     hourly = [{"hour": h, "positive": 0, "neutral": 0, "negative": 0} for h in range(24)]
     subject_counter: Counter = Counter()
     ticker_counter: Counter = Counter()
+    ticker_sentiment: dict[str, Counter] = defaultdict(Counter)
     currency_counter: Counter = Counter()
     histogram = [
         {"bucketStart": i / 10, "bucketEnd": (i + 1) / 10, "count": 0}
@@ -59,7 +62,7 @@ def build_report_payload(
         sent = r.get("sentiment")
         site = r.get("site")
         tickers = list(r.get("matched_tickers") or [])
-        names: list[str] = []
+        roots: list[str] = []
         sectors_for_row: set[str] = set()
         for t in tickers:
             entry = sectors_lookup.get(t)
@@ -67,23 +70,26 @@ def build_report_payload(
                 continue
             short_name = entry.get("short_name")
             sector = entry.get("sector")
+            roots.append(t)
             if short_name:
-                names.append(short_name)
+                company_names[t] = short_name
             if sector:
                 sectors_for_row.add(sector)
 
         if sent in by_sentiment:
-            for n in names:
-                company_counts[n][sent] += 1
+            for root in roots:
+                company_counts[root][sent] += 1
             if site:
                 publisher_counts[site][sent] += 1
             for sector in sectors_for_row:
                 sector_counts[sector][sent] += 1
-                for n in names:
-                    sector_company_counts[sector][n] += 1
+                for root in roots:
+                    sector_company_counts[sector][root] += 1
 
         for t in tickers:
             ticker_counter[t] += 1
+            if sent in by_sentiment:
+                ticker_sentiment[t][sent] += 1
 
         for s in (r.get("subjects") or []):
             subject_counter[s] += 1
@@ -106,11 +112,12 @@ def build_report_payload(
             histogram[idx]["count"] += 1
 
     top_companies = []
-    for name, c in company_counts.items():
+    for root, c in company_counts.items():
         pos, neu, neg = c["positive"], c["neutral"], c["negative"]
         tot = pos + neu + neg
         top_companies.append({
-            "name": name,
+            "ticker": root,
+            "name": company_names.get(root, root),
             "positive": pos,
             "neutral": neu,
             "negative": neg,
@@ -149,7 +156,16 @@ def build_report_payload(
     sector_matrix.sort(key=lambda x: x["tilt"], reverse=True)
 
     top_subjects = [{"subject": s, "count": n} for s, n in subject_counter.most_common(15)]
-    top_tickers = [{"ticker": t, "count": n} for t, n in ticker_counter.most_common(15)]
+    top_tickers = [
+        {
+            "ticker": t,
+            "positive": ticker_sentiment[t]["positive"],
+            "neutral": ticker_sentiment[t]["neutral"],
+            "negative": ticker_sentiment[t]["negative"],
+            "total": n,
+        }
+        for t, n in ticker_counter.most_common(15)
+    ]
     currencies = [{"currency": c, "count": n} for c, n in currency_counter.most_common()]
 
     return {
@@ -193,18 +209,20 @@ def build_window_payload(
             by_sentiment[s] += 1
 
     company_counts: dict[str, Counter] = defaultdict(Counter)
+    company_names: dict[str, str] = {}  # ticker_root → short_name
     publisher_counts: dict[str, Counter] = defaultdict(Counter)
     sector_counts: dict[str, Counter] = defaultdict(Counter)
     sector_company_counts: dict[str, Counter] = defaultdict(Counter)
     subject_counter: Counter = Counter()
     ticker_counter: Counter = Counter()
+    ticker_sentiment: dict[str, Counter] = defaultdict(Counter)
     daily_counts: dict[date, Counter] = defaultdict(Counter)
 
     for r in rows:
         sent = r.get("sentiment")
         site = r.get("site")
         tickers = list(r.get("matched_tickers") or [])
-        names: list[str] = []
+        roots: list[str] = []
         sectors_for_row: set[str] = set()
         for t in tickers:
             entry = sectors_lookup.get(t)
@@ -212,23 +230,26 @@ def build_window_payload(
                 continue
             short_name = entry.get("short_name")
             sector = entry.get("sector")
+            roots.append(t)
             if short_name:
-                names.append(short_name)
+                company_names[t] = short_name
             if sector:
                 sectors_for_row.add(sector)
 
         if sent in by_sentiment:
-            for n in names:
-                company_counts[n][sent] += 1
+            for root in roots:
+                company_counts[root][sent] += 1
             if site:
                 publisher_counts[site][sent] += 1
             for sector in sectors_for_row:
                 sector_counts[sector][sent] += 1
-                for n in names:
-                    sector_company_counts[sector][n] += 1
+                for root in roots:
+                    sector_company_counts[sector][root] += 1
 
         for t in tickers:
             ticker_counter[t] += 1
+            if sent in by_sentiment:
+                ticker_sentiment[t][sent] += 1
         for s in (r.get("subjects") or []):
             subject_counter[s] += 1
 
@@ -239,11 +260,12 @@ def build_window_payload(
                 daily_counts[day][sent] += 1
 
     top_companies = []
-    for name, c in company_counts.items():
+    for root, c in company_counts.items():
         pos, neu, neg = c["positive"], c["neutral"], c["negative"]
         tot = pos + neu + neg
         top_companies.append({
-            "name": name,
+            "ticker": root,
+            "name": company_names.get(root, root),
             "positive": pos, "neutral": neu, "negative": neg,
             "total": tot, "tilt": _tilt(pos, neg, tot),
         })
@@ -290,7 +312,16 @@ def build_window_payload(
         cur = cur.fromordinal(cur.toordinal() + 1)
 
     top_subjects = [{"subject": s, "count": n} for s, n in subject_counter.most_common(15)]
-    top_tickers = [{"ticker": t, "count": n} for t, n in ticker_counter.most_common(15)]
+    top_tickers = [
+        {
+            "ticker": t,
+            "positive": ticker_sentiment[t]["positive"],
+            "neutral": ticker_sentiment[t]["neutral"],
+            "negative": ticker_sentiment[t]["negative"],
+            "total": n,
+        }
+        for t, n in ticker_counter.most_common(15)
+    ]
 
     return {
         "window": {

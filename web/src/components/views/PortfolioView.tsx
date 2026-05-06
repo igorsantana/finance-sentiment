@@ -15,8 +15,10 @@ import {
   PortfolioPerformanceChart,
   type PerformanceSeries,
 } from "../charts/PortfolioPerformanceChart";
+import { PortfolioButterflyChart } from "../charts/PortfolioButterflyChart";
 
-const WINDOW_OPTIONS: WindowSize[] = [3, 7, 14];
+const WINDOW_OPTIONS: WindowSize[] = [1, 3, 7, 14];
+const WINDOW_LABEL: Record<WindowSize, string> = { 1: "Hoje", 3: "3d", 7: "7d", 14: "14d" };
 
 // ── Financial jargon glossary ─────────────────────────────────────────────────
 
@@ -181,7 +183,7 @@ function StockCards({
                 const isWindow = Number(w) === windowSize;
                 return (
                   <span key={w} className={`flex flex-col items-center ${isWindow ? "opacity-100" : "opacity-40"}`}>
-                    <span className="text-[8px] text-muted-foreground/60 font-mono">{w}d</span>
+                    <span className="text-[8px] text-muted-foreground/60 font-mono">{WINDOW_LABEL[Number(w) as WindowSize]}</span>
                     <span
                       className={`text-[10px] font-mono tabular-nums font-medium ${
                         val == null ? "text-muted-foreground/30"
@@ -219,6 +221,7 @@ function PortfolioSummary({
   quantities,
   avgPrices,
   companies,
+  windowSize,
 }: {
   portfolioTickers: string[];
   snapshot: PortfolioSnapshotItem[];
@@ -226,6 +229,7 @@ function PortfolioSummary({
   quantities: Record<string, number>;
   avgPrices: Record<string, number>;
   companies: CompanyListItem[];
+  windowSize: WindowSize;
 }) {
   const snapshotMap = useMemo(
     () => Object.fromEntries(snapshot.map((s) => [s.tickerRoot, s])),
@@ -247,13 +251,27 @@ function PortfolioSummary({
       const current = qty > 0 && currentClose != null ? qty * currentClose : null;
       const pnlBrl = invested != null && current != null ? current - invested : null;
       const pnlPct = invested != null && pnlBrl != null ? (pnlBrl / invested) * 100 : null;
-      const dayChangeBrl =
-        qty > 0 && currentClose != null && dayOpen != null && dayOpen !== 0
-          ? (currentClose - dayOpen) * qty
-          : null;
+
+      // Window-specific result
+      let winPct: number | null = null;
+      let winBrl: number | null = null;
+      if (windowSize === 1) {
+        if (currentClose != null && dayOpen != null && dayOpen !== 0) {
+          winPct = (currentClose - dayOpen) / dayOpen * 100;
+          winBrl = qty > 0 ? (currentClose - dayOpen) * qty : null;
+        }
+      } else {
+        const key = String(windowSize) as "3" | "7" | "14";
+        const changePct = snap?.changes?.[key] ?? null;
+        if (changePct != null && currentClose != null && qty > 0) {
+          winPct = changePct;
+          winBrl = qty * currentClose * (changePct / 100);
+        }
+      }
+
       return {
         root, ticker, name, qty, avg, currentClose, dayOpen,
-        invested, current, pnlBrl, pnlPct, dayChangeBrl,
+        invested, current, pnlBrl, pnlPct, winPct, winBrl,
         color: CARD_COLORS[idx % CARD_COLORS.length],
       };
     })
@@ -265,8 +283,11 @@ function PortfolioSummary({
   const totalCurrent = rows.reduce((s, r) => s + (r.current ?? 0), 0);
   const totalPnlBrl = totalInvested > 0 && totalCurrent > 0 ? totalCurrent - totalInvested : null;
   const totalPnlPct = totalInvested > 0 && totalPnlBrl != null ? (totalPnlBrl / totalInvested) * 100 : null;
-  const totalDayChange = rows.reduce((s, r) => s + (r.dayChangeBrl ?? 0), 0);
-  const hasDayChange = rows.some((r) => r.dayChangeBrl != null);
+  const totalWinBrl = rows.some((r) => r.winBrl != null)
+    ? rows.reduce((s, r) => s + (r.winBrl ?? 0), 0)
+    : null;
+
+  const winLabel = WINDOW_LABEL[windowSize];
 
   const th = "px-3 py-2 text-left text-[10px] font-mono uppercase tracking-widest text-muted-foreground/60 whitespace-nowrap";
   const td = "px-3 py-2 text-xs font-mono tabular-nums whitespace-nowrap";
@@ -279,7 +300,7 @@ function PortfolioSummary({
           Resumo da carteira
         </p>
 
-        <div className="flex items-end gap-4 flex-wrap">
+        <div className="flex items-end gap-6 flex-wrap">
           {totalCurrent > 0 ? (
             <div>
               <p className="text-[10px] font-mono text-muted-foreground/50 mb-0.5">Patrimônio atual</p>
@@ -296,13 +317,22 @@ function PortfolioSummary({
             </div>
           )}
 
+          {totalWinBrl != null && (
+            <div className="pb-0.5">
+              <p className="text-[10px] font-mono text-muted-foreground/50 mb-0.5">Resultado {winLabel}</p>
+              <p className={`text-xl font-mono font-semibold tabular-nums ${totalWinBrl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                {totalWinBrl >= 0 ? "+" : ""}R$ {fmtBrl(totalWinBrl)}
+              </p>
+            </div>
+          )}
+
           {totalPnlBrl != null && (
             <div className="pb-0.5">
               <p className="text-[10px] font-mono text-muted-foreground/50 mb-0.5">Resultado total</p>
-              <p className={`text-lg font-mono font-semibold tabular-nums ${totalPnlBrl >= 0 ? "text-green-400" : "text-red-400"}`}>
+              <p className={`text-base font-mono tabular-nums ${totalPnlBrl >= 0 ? "text-green-400/70" : "text-red-400/70"}`}>
                 {totalPnlBrl >= 0 ? "+" : ""}R$ {fmtBrl(totalPnlBrl)}
                 {totalPnlPct != null && (
-                  <span className="ml-1.5 text-sm font-normal opacity-80">
+                  <span className="ml-1.5 text-sm opacity-80">
                     ({totalPnlPct >= 0 ? "+" : ""}{totalPnlPct.toFixed(2)}%)
                   </span>
                 )}
@@ -311,19 +341,10 @@ function PortfolioSummary({
           )}
         </div>
 
-        {/* Secondary stats row */}
         <div className="flex gap-6 mt-3 flex-wrap">
           {totalInvested > 0 && totalCurrent > 0 && (
             <div className="text-[11px] font-mono text-muted-foreground/60">
               Custo médio: <span className="text-foreground">R$ {fmtBrl(totalInvested)}</span>
-            </div>
-          )}
-          {hasDayChange && (
-            <div className="text-[11px] font-mono text-muted-foreground/60">
-              Variação do dia:{" "}
-              <span className={totalDayChange >= 0 ? "text-green-400" : "text-red-400"}>
-                {totalDayChange >= 0 ? "+" : ""}R$ {fmtBrl(totalDayChange)}
-              </span>
             </div>
           )}
           <div className="text-[11px] font-mono text-muted-foreground/60">
@@ -341,8 +362,9 @@ function PortfolioSummary({
               <th className={`${th} text-right`}>Qtd.</th>
               <th className={`${th} text-right`}>P.M.</th>
               <th className={`${th} text-right`}>Atual</th>
-              <th className={`${th} text-right`}>Resultado R$</th>
-              <th className={`${th} text-right`}>Resultado %</th>
+              <th className={`${th} text-right`}>{winLabel} R$</th>
+              <th className={`${th} text-right`}>{winLabel} %</th>
+              <th className={`${th} text-right`}>Total %</th>
               <th className={`${th} text-right`}>Alocação</th>
             </tr>
           </thead>
@@ -362,10 +384,13 @@ function PortfolioSummary({
                   <td className={`${td} text-right`}>
                     {r.currentClose != null ? `R$ ${fmtBrl(r.currentClose)}` : "—"}
                   </td>
-                  <td className={`${td} text-right ${r.pnlBrl == null ? "text-muted-foreground/40" : r.pnlBrl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                    {r.pnlBrl == null ? "—" : `${r.pnlBrl >= 0 ? "+" : ""}R$ ${fmtBrl(r.pnlBrl)}`}
+                  <td className={`${td} text-right ${r.winBrl == null ? "text-muted-foreground/40" : r.winBrl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    {r.winBrl == null ? "—" : `${r.winBrl >= 0 ? "+" : ""}R$ ${fmtBrl(r.winBrl)}`}
                   </td>
-                  <td className={`${td} text-right ${r.pnlPct == null ? "text-muted-foreground/40" : r.pnlPct >= 0 ? "text-green-400" : "text-red-400"}`}>
+                  <td className={`${td} text-right ${r.winPct == null ? "text-muted-foreground/40" : r.winPct >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    {r.winPct == null ? "—" : `${r.winPct >= 0 ? "+" : ""}${r.winPct.toFixed(2)}%`}
+                  </td>
+                  <td className={`${td} text-right ${r.pnlPct == null ? "text-muted-foreground/40" : r.pnlPct >= 0 ? "text-green-400/60" : "text-red-400/60"}`}>
                     {r.pnlPct == null ? "—" : `${r.pnlPct >= 0 ? "+" : ""}${r.pnlPct.toFixed(2)}%`}
                   </td>
                   <td className={`${td} text-right text-muted-foreground/70`}>
@@ -506,7 +531,7 @@ function AdvisorSummary({
       subtitle={
         data?.model
           ? `${data.model} · ${windowSize}d · ${data.generatedAt ? new Date(data.generatedAt).toLocaleString("pt-BR") : "gerado agora"}`
-          : `gerado por IA com base nas notícias dos últimos ${windowSize} dias`
+          : `gerado por IA com base nas notícias ${windowSize === 1 ? "de hoje" : `dos últimos ${windowSize} dias`}`
       }
     >
       {loading ? (
@@ -650,7 +675,7 @@ export function PortfolioView({
                           : "text-muted-foreground hover:text-foreground"
                       }`}
                     >
-                      {n}d
+                      {WINDOW_LABEL[n]}
                     </button>
                   );
                 })}
@@ -688,6 +713,7 @@ export function PortfolioView({
           quantities={quantities}
           avgPrices={avgPrices}
           companies={companies}
+          windowSize={windowSize}
         />
       )}
 
@@ -695,7 +721,19 @@ export function PortfolioView({
         <AdvisorSummary portfolioTickers={portfolioTickers} windowSize={windowSize} />
       )}
 
-      {portfolioTickers.length > 0 && (
+      {portfolioTickers.length > 0 && windowSize === 1 && (
+        <ChartCard
+          title="Sentimento hoje"
+          subtitle="positivo · negativo por empresa"
+        >
+          <PortfolioButterflyChart
+            portfolioTickers={portfolioTickers}
+            windowSize={windowSize}
+          />
+        </ChartCard>
+      )}
+
+      {portfolioTickers.length > 0 && windowSize !== 1 && (
         <ChartCard
           title="Evolução da carteira"
           subtitle={hasAnyQty ? "% de variação por empresa · carteira ponderada (tracejado)" : "% de variação por empresa"}
@@ -708,7 +746,7 @@ export function PortfolioView({
         </ChartCard>
       )}
 
-      {portfolioTickers.length > 0 && (
+      {portfolioTickers.length > 0 && windowSize !== 1 && (
         <div>
           <p className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 mb-3">
             Sentimento × Cotação

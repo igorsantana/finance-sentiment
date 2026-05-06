@@ -27,7 +27,7 @@ export function CompanyPanel({ date }: CompanyPanelProps) {
     return report.topTickers.map((t) => ({
       value: t.ticker,
       label: t.ticker,
-      hint: `${t.count} art.`,
+      hint: `${t.total} art.`,
     }));
   }, [report]);
 

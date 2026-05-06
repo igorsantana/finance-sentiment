@@ -110,8 +110,8 @@ export function SentimentVsPriceChart({ data }: SentimentVsPriceChartProps) {
               yAxisId="price"
               orientation="right"
               domain={[minClose - padClose, maxClose + padClose]}
-              tickFormatter={(v: number) => v.toFixed(2)}
-              width={48}
+              tickFormatter={(v: number) => `R$${v.toFixed(2)}`}
+              width={64}
               {...yAxisDefaults}
             />
           )}

@@ -27,6 +27,7 @@ export type ReportPayload = {
     bySentiment: { positive: number; neutral: number; negative: number };
   };
   topCompanies: Array<{
+    ticker: string;
     name: string;
     positive: number;
     neutral: number;
@@ -56,7 +57,7 @@ export type ReportPayload = {
     negative: number;
   }>;
   topSubjects: Array<{ subject: string; count: number }>;
-  topTickers: Array<{ ticker: string; count: number }>;
+  topTickers: Array<{ ticker: string; positive: number; neutral: number; negative: number; total: number }>;
   scoreHistogram: Array<{ bucketStart: number; bucketEnd: number; count: number }>;
   currencies: Array<{ currency: string; count: number }>;
 };
@@ -71,7 +72,7 @@ export async function getReport(
   return r.json();
 }
 
-export type WindowSize = 3 | 7 | 14;
+export type WindowSize = 1 | 3 | 7 | 14;
 
 export type WindowOverall = {
   window: { start: string; end: string; days: number };
@@ -113,7 +114,7 @@ export type WindowCompany = {
     avgScore: number | null;
     close: number | null;
   }>;
-  topPublishers: Array<{ site: string; count: number }>;
+  sentimentByPublisher: ReportPayload["sentimentByPublisher"];
   topSubjects: Array<{ subject: string; count: number }>;
   correlation: number | null;
 };
@@ -344,6 +345,10 @@ export async function startRun(
   return r.json();
 }
 
+export async function cancelRun(runId: string): Promise<void> {
+  await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+}
+
 export function openStream(
   streamUrl: string,
   onEvent: (ev: StreamEvent) => void,
@@ -367,6 +372,38 @@ export function openStream(
     }
   };
   return es;
+}
+
+// ---------- Calendar ----------
+
+export type CalendarDay = {
+  date: string;
+  has_articles: boolean;
+  article_count: number;
+  sentiment_net: number | null;
+  positive_pct: number | null;
+  negative_pct: number | null;
+  ibovespa_change_pct: number | null;
+  portfolio_change_pct: number | null;
+};
+
+export type CalendarPayload = {
+  month: string;
+  days: CalendarDay[];
+};
+
+export async function getCalendar(
+  month: string,
+  opts?: { tickers?: string[]; quantities?: Record<string, number>; signal?: AbortSignal },
+): Promise<CalendarPayload> {
+  const params = new URLSearchParams({ month });
+  if (opts?.tickers?.length) {
+    params.set("tickers", opts.tickers.join(","));
+    params.set("quantities", opts.tickers.map((t) => String(opts.quantities?.[t] ?? 1)).join(","));
+  }
+  const r = await fetch(`/api/calendar?${params}`, { signal: opts?.signal });
+  if (!r.ok) throw new Error(`GET /api/calendar → ${r.status}`);
+  return r.json();
 }
 
 // ---------- Admin ----------

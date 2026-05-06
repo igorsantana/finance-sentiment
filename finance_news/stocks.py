@@ -34,7 +34,13 @@ DEFAULT_SPAN = 10
 
 def _resolve_symbol(conn, ticker_root: str) -> str:
     """``PETR`` → ``PETR4.SA``. Falls back to ``<root>.SA`` if the
-    companies table has no full ticker for the root."""
+    companies table has no full ticker for the root.
+
+    Index symbols starting with ``^`` (e.g. ``^BVSP``) are returned as-is
+    since they are already valid yfinance symbols.
+    """
+    if ticker_root.startswith("^"):
+        return ticker_root
     with conn.cursor() as cur:
         cur.execute(
             "SELECT ticker FROM companies WHERE ticker_root = %s",

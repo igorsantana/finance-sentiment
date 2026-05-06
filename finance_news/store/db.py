@@ -543,6 +543,35 @@ def fetch_ohlc_range(
         return cur.fetchall()
 
 
+def fetch_calendar_sentiment(
+    conn: psycopg.Connection,
+    *,
+    start: date,
+    end: date,
+) -> list[dict[str, Any]]:
+    """Return per-SP-day article counts and sentiment totals for a date range.
+
+    Each row: {day, article_count, positive, negative}.
+    Only days with at least one article are returned.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                (published_at AT TIME ZONE 'America/Sao_Paulo')::date AS day,
+                COUNT(*)::int AS article_count,
+                SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END)::int AS positive,
+                SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END)::int AS negative
+            FROM articles
+            WHERE (published_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN %s AND %s
+            GROUP BY 1
+            ORDER BY 1
+            """,
+            (start, end),
+        )
+        return cur.fetchall()
+
+
 # ---------- judgments ----------
 
 def insert_judgment(

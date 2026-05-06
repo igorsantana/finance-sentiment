@@ -1,3 +1,4 @@
+import { ScrollText, StopCircle } from "lucide-react";
 import type { StageProgress } from "../../hooks/useRunStream";
 
 const STAGES = [
@@ -10,9 +11,12 @@ export type TopBarProps = {
   running: boolean;
   stage: string;
   stageProgress: StageProgress;
+  logCount: number;
+  onToggleLogs: () => void;
+  onStop: () => void;
 };
 
-export function TopBar({ running, stage, stageProgress }: TopBarProps) {
+export function TopBar({ running, stage, stageProgress, logCount, onToggleLogs, onStop }: TopBarProps) {
   const currentStageIndex = STAGES.findIndex((s) => s.id === stage);
   const isDone = stage === "done";
   const isError = stage === "error";
@@ -30,69 +34,96 @@ export function TopBar({ running, stage, stageProgress }: TopBarProps) {
 
   return (
     <div className="border-b border-border bg-background/80 backdrop-blur-sm scanline">
-      <div className="px-6 py-4">
-        <div className="flex items-center justify-center gap-3 mb-3">
-          {STAGES.map((s, idx) => {
-            const completed = isDone || (!isError && idx < currentStageIndex);
-            const active = !isDone && !isError && idx === currentStageIndex;
-            const errored = isError && idx === currentStageIndex;
-            const circleClass = errored
-              ? "bg-destructive text-destructive-foreground border border-destructive"
-              : active
-                ? "bg-primary text-primary-foreground border neon-edge"
+      <div className="px-6 py-4 flex items-center gap-4">
+        <div className="flex-1 space-y-3">
+          <div className="flex items-center justify-center gap-3">
+            {STAGES.map((s, idx) => {
+              const completed = isDone || (!isError && idx < currentStageIndex);
+              const active = !isDone && !isError && idx === currentStageIndex;
+              const errored = isError && idx === currentStageIndex;
+              const circleClass = errored
+                ? "bg-destructive text-destructive-foreground border border-destructive"
+                : active
+                  ? "bg-primary text-primary-foreground border neon-edge"
+                  : completed
+                    ? "bg-primary/15 text-primary border border-primary/60"
+                    : "bg-muted/40 text-muted-foreground border border-border";
+              const labelClass = active
+                ? "text-primary"
                 : completed
-                  ? "bg-primary/15 text-primary border border-primary/60"
-                  : "bg-muted/40 text-muted-foreground border border-border";
-            const labelClass = active
-              ? "text-primary"
-              : completed
-                ? "text-primary/80"
-                : errored
-                  ? "text-destructive"
-                  : "text-muted-foreground";
-            const connectorClass =
-              isDone || (!isError && idx < currentStageIndex)
-                ? "bg-primary/60"
-                : "bg-border";
-            return (
-              <div key={s.id} className="flex items-center gap-3">
-                <div
-                  className={`flex items-center justify-center w-9 h-9 rounded-full text-sm transition-all ${circleClass}`}
-                >
-                  {s.icon}
+                  ? "text-primary/80"
+                  : errored
+                    ? "text-destructive"
+                    : "text-muted-foreground";
+              const connectorClass =
+                isDone || (!isError && idx < currentStageIndex)
+                  ? "bg-primary/60"
+                  : "bg-border";
+              return (
+                <div key={s.id} className="flex items-center gap-3">
+                  <div
+                    className={`flex items-center justify-center w-9 h-9 rounded-full text-sm transition-all ${circleClass}`}
+                  >
+                    {s.icon}
+                  </div>
+                  <div
+                    className={`text-[11px] font-mono uppercase tracking-widest ${labelClass}`}
+                  >
+                    {s.label}
+                  </div>
+                  {idx < STAGES.length - 1 && (
+                    <div className={`w-10 h-px transition-all ${connectorClass}`} />
+                  )}
                 </div>
-                <div
-                  className={`text-[11px] font-mono uppercase tracking-widest ${labelClass}`}
-                >
-                  {s.label}
-                </div>
-                {idx < STAGES.length - 1 && (
-                  <div className={`w-10 h-px transition-all ${connectorClass}`} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="flex-1 h-1 bg-muted/50 rounded-full overflow-hidden border border-border/60">
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-1 bg-muted/50 rounded-full overflow-hidden border border-border/60">
+              <div
+                className={`h-full transition-all duration-300 ${
+                  isError
+                    ? "bg-destructive"
+                    : running
+                      ? "bg-primary shadow-[0_0_12px_hsl(var(--primary)/0.8),_0_0_24px_hsl(var(--primary)/0.3)] neon-flicker"
+                      : "bg-primary/60"
+                }`}
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
             <div
-              className={`h-full transition-all duration-300 ${
-                isError
-                  ? "bg-destructive"
-                  : running
-                    ? "bg-primary shadow-[0_0_12px_hsl(var(--primary)/0.8),_0_0_24px_hsl(var(--primary)/0.3)] neon-flicker"
-                    : "bg-primary/60"
+              className={`w-12 text-right font-mono text-xs tabular-nums ${
+                running ? "text-primary" : "text-muted-foreground"
               }`}
-              style={{ width: `${progressPercent}%` }}
-            />
+            >
+              {progressPercent}%
+            </div>
           </div>
-          <div
-            className={`w-12 text-right font-mono text-xs tabular-nums ${
-              running ? "text-primary" : "text-muted-foreground"
-            }`}
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0">
+          {running && (
+            <button
+              onClick={onStop}
+              className="flex flex-col items-center gap-1 p-2 rounded hover:bg-destructive/10 transition-colors group"
+              aria-label="Parar execução"
+              title="Parar execução"
+            >
+              <StopCircle className="h-5 w-5 text-destructive/70 group-hover:text-destructive transition-colors" />
+            </button>
+          )}
+          <button
+            onClick={onToggleLogs}
+            className="relative flex flex-col items-center gap-1 p-2 rounded hover:bg-muted/40 transition-colors group"
+            aria-label="Alternar logs"
           >
-            {progressPercent}%
-          </div>
+            <ScrollText className="h-5 w-5 text-muted-foreground group-hover:text-foreground transition-colors" />
+            {logCount > 0 && (
+              <span className="text-[9px] font-mono text-primary tabular-nums">
+                {logCount}
+              </span>
+            )}
+          </button>
         </div>
       </div>
     </div>

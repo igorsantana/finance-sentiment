@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { AdminView } from "./components/views/AdminView";
 import { AnalysisView } from "./components/views/AnalysisView";
-import { PipelineView } from "./components/views/PipelineView";
+import { CalendarView } from "./components/views/CalendarView";
+import { LogsDrawer } from "./components/views/LogsDrawer";
 import { PortfolioView } from "./components/views/PortfolioView";
 import { ReportView, type ViewMode } from "./components/views/ReportView";
 import { Sidebar, type Section } from "./components/layout/Sidebar";
 import { TopBar } from "./components/layout/TopBar";
 import { useRunStream } from "./hooks/useRunStream";
-import { DatesPayload, getDates } from "./api";
 
 function todayInSP(): string {
   const fmt = new Intl.DateTimeFormat("en-CA", {
@@ -30,11 +30,11 @@ function loadStorage<T>(key: string, fallback: T): T {
 }
 
 export default function App() {
-  const [dates, setDates] = useState<DatesPayload>({ with_articles: [] });
-  const [section, setSection] = useState<Section>("pipeline");
+  const [section, setSection] = useState<Section>("calendar");
   const [reportDate, setReportDate] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("charts");
   const [runDate, setRunDate] = useState<string>(() => todayInSP());
+  const [logsOpen, setLogsOpen] = useState(false);
 
   const [portfolioTickers, setPortfolioTickersRaw] = useState<string[]>(
     () => loadStorage<string[]>("portfolioTickers", [])
@@ -67,30 +67,46 @@ export default function App() {
     });
   };
 
-  const refreshDates = () =>
-    getDates().then(setDates).catch((e) => console.error(e));
+  const [queue, setQueue] = useState<string[]>([]);
 
-  const { running, stage, stageProgress, logs, final, start } = useRunStream({
-    onSettled: (outcome) => {
-      if (outcome === "ok") {
-        refreshDates();
-      }
-    },
+  const { running, stage, stageProgress, logs, final, start, stop } = useRunStream({
+    onSettled: () => {},
     onReattach: (active) => {
       setRunDate(active.target_date);
-      setSection("pipeline");
+      setLogsOpen(true);
     },
   });
 
   useEffect(() => {
-    refreshDates();
-  }, []);
+    if (running) setLogsOpen(true);
+  }, [running]);
 
-  const canRun = !running && /^\d{4}-\d{2}-\d{2}$/.test(runDate);
+  // Auto-drain queue: when pipeline finishes and queue has items, start next
+  useEffect(() => {
+    if (!running && queue.length > 0) {
+      const next = queue[0];
+      setQueue((q) => q.slice(1));
+      setRunDate(next);
+      start(next, "full");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
 
-  const handleStart = () => {
-    if (!canRun) return;
-    start(runDate, "full");
+  const handleQueueDate = (dateIso: string) => {
+    setQueue((q) => {
+      if (q.includes(dateIso)) return q.filter((d) => d !== dateIso);
+      // If nothing running, start immediately; otherwise enqueue
+      if (!running && q.length === 0) {
+        setRunDate(dateIso);
+        start(dateIso, "full");
+        return q;
+      }
+      return [...q, dateIso];
+    });
+  };
+
+  const handleRemoveFromQueue = (dateIso: string) => {
+    setQueue((q) => q.filter((d) => d !== dateIso));
   };
 
   const handleSelectReport = (dateIso: string) => {
@@ -99,59 +115,77 @@ export default function App() {
   };
 
   return (
-    <main className="min-h-screen bg-background grid grid-cols-[260px,1fr]">
+    <main className="h-screen bg-background grid grid-cols-[260px,1fr] overflow-hidden">
       <Sidebar
         section={section}
         reportDate={reportDate}
-        reportDates={dates.with_articles}
         portfolioTickers={portfolioTickers}
-        onSelectPipeline={() => setSection("pipeline")}
-        onSelectReport={handleSelectReport}
+        onSelectCalendar={() => setSection("calendar")}
         onSelectAnalysis={() => setSection("analysis")}
         onSelectPortfolio={() => setSection("portfolio")}
         onSelectAdmin={() => setSection("admin")}
       />
 
-      <div className="flex flex-col min-h-screen overflow-x-hidden">
-        <TopBar running={running} stage={stage} stageProgress={stageProgress} />
+      <div className="flex flex-col h-full overflow-hidden">
+        <TopBar
+          running={running}
+          stage={stage}
+          stageProgress={stageProgress}
+          logCount={logs.length}
+          onToggleLogs={() => setLogsOpen((v) => !v)}
+          onStop={stop}
+        />
 
-        <div className="flex-1 px-8 py-8 min-w-0">
-          {section === "admin" ? (
-            <AdminView
-              portfolioTickers={portfolioTickers}
-              onPortfolioChange={setPortfolioTickers}
-              quantities={quantities}
-              onQtyChange={setQty}
-              avgPrices={avgPrices}
-              onAvgChange={setAvg}
-            />
-          ) : section === "pipeline" ? (
-            <PipelineView
-              runDate={runDate}
-              onRunDateChange={setRunDate}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {section === "calendar" ? (
+            <CalendarView
+              onSelectDate={handleSelectReport}
+              selectedDate={reportDate}
+              onQueueDate={handleQueueDate}
+              onRemoveFromQueue={handleRemoveFromQueue}
+              queue={queue}
               running={running}
-              canRun={canRun}
-              final={final}
-              logs={logs}
-              onStart={handleStart}
-            />
-          ) : section === "analysis" ? (
-            <AnalysisView />
-          ) : section === "portfolio" ? (
-            <PortfolioView
+              runningDate={runDate}
               portfolioTickers={portfolioTickers}
               quantities={quantities}
-              avgPrices={avgPrices}
             />
           ) : (
-            <ReportView
-              date={reportDate}
-              viewMode={viewMode}
-              onViewModeChange={setViewMode}
-            />
+            <div className="h-full overflow-auto px-8 py-8">
+              {section === "admin" ? (
+                <AdminView
+                  portfolioTickers={portfolioTickers}
+                  onPortfolioChange={setPortfolioTickers}
+                  quantities={quantities}
+                  onQtyChange={setQty}
+                  avgPrices={avgPrices}
+                  onAvgChange={setAvg}
+                />
+              ) : section === "analysis" ? (
+                <AnalysisView />
+              ) : section === "portfolio" ? (
+                <PortfolioView
+                  portfolioTickers={portfolioTickers}
+                  quantities={quantities}
+                  avgPrices={avgPrices}
+                />
+              ) : (
+                <ReportView
+                  date={reportDate}
+                  viewMode={viewMode}
+                  onViewModeChange={setViewMode}
+                />
+              )}
+            </div>
           )}
         </div>
       </div>
+
+      <LogsDrawer
+        open={logsOpen}
+        onClose={() => setLogsOpen(false)}
+        logs={logs}
+        final={final}
+      />
     </main>
   );
 }

@@ -38,7 +38,7 @@ function StackTooltip({
   return (
     <TooltipShell>
       <div className="uppercase tracking-widest text-muted-foreground/80">
-        {d.name}
+        {d.ticker} · {d.name}
       </div>
       <SentimentBreakdown {...d} />
       <div className="mt-1 text-muted-foreground/80">
@@ -67,7 +67,7 @@ export function CompaniesStacked({ data }: { data: ReportPayload }) {
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 16 }}>
               <XAxis type="number" {...xAxisDefaults} />
-              <YAxis type="category" dataKey="name" width={110} {...yAxisDefaults} />
+              <YAxis type="category" dataKey="ticker" width={72} {...yAxisDefaults} />
               <Tooltip cursor={tooltipCursor} content={<StackTooltip />} />
               {STACK.map((tone) => (
                 <Bar

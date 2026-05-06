@@ -33,7 +33,7 @@ function CompanyTooltip({
   return (
     <TooltipShell>
       <div className="uppercase tracking-widest text-muted-foreground/80">
-        {d.name}
+        {d.ticker} · {d.name}
       </div>
       <SentimentBreakdown {...d} />
       <div className="mt-1 text-muted-foreground/80">
@@ -55,12 +55,12 @@ export function TopCompaniesBar({ data }: { data: ReportPayload }) {
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 16 }}>
               <XAxis type="number" {...xAxisDefaults} />
-              <YAxis type="category" dataKey="name" width={96} {...yAxisDefaults} />
+              <YAxis type="category" dataKey="ticker" width={72} {...yAxisDefaults} />
               <Tooltip cursor={tooltipCursor} content={<CompanyTooltip />} />
               <Bar dataKey="total" radius={[0, 4, 4, 0]}>
                 {rows.map((r) => (
                   <Cell
-                    key={r.name}
+                    key={r.ticker}
                     fill={SENTIMENT_COLORS[netTone(r.positive, r.negative)]}
                   />
                 ))}

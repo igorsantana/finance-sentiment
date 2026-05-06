@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ActiveRun,
   StreamEvent,
+  cancelRun,
   getActiveRun,
   openStream,
   startRun,
@@ -35,6 +36,7 @@ export type UseRunStreamResult = {
   logs: LogLine[];
   final: string | null;
   start: (dateIso: string, kind?: "ingest" | "extract" | "full") => Promise<void>;
+  stop: () => Promise<void>;
 };
 
 export function useRunStream(opts: UseRunStreamOptions = {}): UseRunStreamResult {
@@ -47,6 +49,7 @@ export function useRunStream(opts: UseRunStreamOptions = {}): UseRunStreamResult
   const [running, setRunning] = useState(false);
   const [final, setFinal] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
+  const runIdRef = useRef<string | null>(null);
 
   // Latest callbacks via refs so attachStream's closure isn't stale and we
   // don't have to re-attach the SSE source when the parent re-renders.
@@ -101,6 +104,7 @@ export function useRunStream(opts: UseRunStreamOptions = {}): UseRunStreamResult
     getActiveRun()
       .then((active) => {
         if (active) {
+          runIdRef.current = active.run_id;
           onReattachRef.current?.(active);
           attachStream(active.stream_url);
         }
@@ -118,7 +122,8 @@ export function useRunStream(opts: UseRunStreamOptions = {}): UseRunStreamResult
     kind: "ingest" | "extract" | "full" = "full",
   ) => {
     try {
-      const { stream_url } = await startRun(dateIso, kind);
+      const { run_id, stream_url } = await startRun(dateIso, kind);
+      runIdRef.current = run_id;
       attachStream(stream_url);
     } catch (e) {
       setFinal(`Erro: ${String(e)}`);
@@ -126,5 +131,11 @@ export function useRunStream(opts: UseRunStreamOptions = {}): UseRunStreamResult
     }
   };
 
-  return { running, stage, stageProgress, logs, final, start };
+  const stop = async () => {
+    if (runIdRef.current) {
+      await cancelRun(runIdRef.current).catch(() => {});
+    }
+  };
+
+  return { running, stage, stageProgress, logs, final, start, stop };
 }

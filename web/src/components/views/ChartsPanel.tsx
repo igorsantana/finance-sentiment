@@ -1,4 +1,3 @@
-import { Card, CardContent } from "../ui/card";
 import { ChartCard } from "../charts/ChartCard";
 import { HeaderStats } from "../charts/HeaderStats";
 import { SentimentDonut } from "../charts/SentimentDonut";
@@ -45,40 +44,32 @@ export function ChartsPanel({ date }: ChartsPanelProps) {
 
   if (!date) {
     return (
-      <Card className="flex items-center justify-center py-16">
-        <CardContent className="pt-6">
-          <p className="text-muted-foreground">
-            Selecione uma data processada para visualizar os gráficos.
-          </p>
-        </CardContent>
-      </Card>
+      <div className="flex items-center justify-center py-16">
+        <p className="text-muted-foreground">
+          Selecione uma data processada para visualizar os gráficos.
+        </p>
+      </div>
     );
   }
 
   if (error) {
     return (
-      <Card className="neon-edge-magenta py-10">
-        <CardContent className="pt-6 text-center space-y-2">
-          <p className="font-mono uppercase tracking-widest text-sm text-accent">
-            falha ao carregar relatório
-          </p>
-          <p className="text-xs text-muted-foreground font-mono">
-            {error.message}
-          </p>
-        </CardContent>
-      </Card>
+      <div className="py-10 text-center space-y-2">
+        <p className="font-mono uppercase tracking-widest text-sm text-accent">
+          falha ao carregar relatório
+        </p>
+        <p className="text-xs text-muted-foreground font-mono">{error.message}</p>
+      </div>
     );
   }
 
   if (!loading && data === null) {
     return (
-      <Card className="flex items-center justify-center py-16">
-        <CardContent className="pt-6">
-          <p className="text-muted-foreground">
-            Selecione uma data processada para visualizar os gráficos.
-          </p>
-        </CardContent>
-      </Card>
+      <div className="flex items-center justify-center py-16">
+        <p className="text-muted-foreground">
+          Selecione uma data processada para visualizar os gráficos.
+        </p>
+      </div>
     );
   }
 
