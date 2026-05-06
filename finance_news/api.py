@@ -303,6 +303,16 @@ def get_report(report_date: str) -> dict[str, Any]:
 _WINDOW_OPTIONS = (3, 7, 14)
 
 
+def _subtract_business_days(d: date, n: int) -> date:
+    """Return the date that is ``n`` business days (Mon–Fri) before ``d``."""
+    current = d
+    while n > 0:
+        current -= timedelta(days=1)
+        if current.weekday() < 5:
+            n -= 1
+    return current
+
+
 def _resolve_window(window: int, end: str | None) -> tuple[date, date, int]:
     if window not in _WINDOW_OPTIONS:
         raise HTTPException(
@@ -319,7 +329,10 @@ def _resolve_window(window: int, end: str | None) -> tuple[date, date, int]:
             end_date = date.fromisoformat(end)
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid end date")
-    start_date = end_date - timedelta(days=window - 1)
+    # Advance end_date to the nearest weekday if it lands on a weekend
+    while end_date.weekday() >= 5:
+        end_date -= timedelta(days=1)
+    start_date = _subtract_business_days(end_date, window - 1)
     return start_date, end_date, window
 
 
@@ -381,8 +394,12 @@ def get_trends_company(
     daily: list[dict[str, Any]] = []
     closes: list[float] = []
     nets: list[float] = []
-    for offset in range(days):
+    # Iterate calendar days but emit only business days
+    cal_days = (end_date - start_date).days + 1
+    for offset in range(cal_days):
         d = start_date + timedelta(days=offset)
+        if d.weekday() >= 5:  # skip Saturday / Sunday
+            continue
         s = by_day.get(d)
         pos = int(s["positive"]) if s else 0
         neu = int(s["neutral"]) if s else 0
@@ -443,15 +460,18 @@ def get_trends_company(
 
 
 @app.get("/api/advisor/overall")
-def get_advisor_overall(window: int = 7, end: str | None = None) -> dict[str, Any]:
-    payload = get_trends_overall(window=window, end=end)
+def get_advisor_overall(window: int = 7, end: str | None = None, tickers: str | None = None) -> dict[str, Any]:
+    payload = get_trends_overall(window=window, end=end, tickers=tickers)
     end_iso = payload["window"]["end"]
     end_date = date.fromisoformat(end_iso)
     days = payload["window"]["days"]
 
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else []
+    cache_key = ",".join(sorted(ticker_list)) if ticker_list else ""
+
     with db.connect() as conn:
         cached = db.fetch_advisor_narrative(
-            conn, window_days=days, end_date=end_date, ticker_root="",
+            conn, window_days=days, end_date=end_date, ticker_root=cache_key,
         )
     if cached:
         return _serialize_narrative(cached)
@@ -470,7 +490,7 @@ def get_advisor_overall(window: int = 7, end: str | None = None) -> dict[str, An
     with db.connect() as conn:
         db.upsert_advisor_narrative(
             conn,
-            window_days=days, end_date=end_date, ticker_root="",
+            window_days=days, end_date=end_date, ticker_root=cache_key,
             paragraphs=result["paragraphs"],
             article_count=article_count,
             model=result["model"],

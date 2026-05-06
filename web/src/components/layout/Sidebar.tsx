@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Briefcase, ChevronDown, Cpu, FileBarChart, Filter, LineChart, Zap } from "lucide-react";
+import { Briefcase, ChevronDown, Cpu, FileBarChart, LineChart, Zap } from "lucide-react";
 import { formatPtBr } from "../../lib/date";
 
 export type Section = "pipeline" | "report" | "analysis" | "portfolio";
@@ -8,35 +8,26 @@ export type SidebarProps = {
   section: Section;
   reportDate: string | null;
   reportDates: string[];
-  portfolioFilterActive: boolean;
   portfolioTickers: string[];
-  portfolioDatesSet: Set<string> | null;
   onSelectPipeline: () => void;
   onSelectReport: (dateIso: string) => void;
   onSelectAnalysis: () => void;
   onSelectPortfolio: () => void;
-  onToggleFilter: () => void;
 };
 
 export function Sidebar({
   section,
   reportDate,
   reportDates,
-  portfolioFilterActive,
   portfolioTickers,
-  portfolioDatesSet,
   onSelectPipeline,
   onSelectReport,
   onSelectAnalysis,
   onSelectPortfolio,
-  onToggleFilter,
 }: SidebarProps) {
   const [reportsOpen, setReportsOpen] = useState(true);
 
-  const visibleDates = [...reportDates].sort().reverse().filter((d) => {
-    if (!portfolioFilterActive || !portfolioDatesSet) return true;
-    return portfolioDatesSet.has(d);
-  });
+  const visibleDates = [...reportDates].sort().reverse();
 
   const baseEntry =
     "w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors";
@@ -45,7 +36,6 @@ export function Sidebar({
 
   return (
     <aside className="border-r border-border bg-background/60 backdrop-blur-sm flex flex-col">
-      {/* Header */}
       <div className="px-5 py-5 border-b border-border scanline">
         <div className="flex items-center gap-2 font-mono">
           <Zap className="h-4 w-4 text-primary neon-flicker" />
@@ -53,45 +43,6 @@ export function Sidebar({
             Finance<span className="text-primary">.News</span>
           </span>
         </div>
-
-        {portfolioTickers.length > 0 && (
-          <div className="mt-3 pt-2.5 border-t border-border/30 flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-[9px] font-mono uppercase tracking-[0.18em] text-muted-foreground/60">
-              <Filter className="h-3 w-3" />
-              Filtro carteira
-            </span>
-            <button
-              type="button"
-              onClick={onToggleFilter}
-              title="Filtrar por carteira"
-              aria-pressed={portfolioFilterActive}
-              className="group flex items-center gap-1.5 focus:outline-none"
-            >
-              <span
-                className={`text-[9px] font-mono uppercase tracking-widest transition-colors ${
-                  portfolioFilterActive ? "text-primary" : "text-muted-foreground/40"
-                }`}
-              >
-                {portfolioFilterActive ? "on" : "off"}
-              </span>
-              <span
-                className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors duration-200 ${
-                  portfolioFilterActive
-                    ? "bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.6)]"
-                    : "bg-muted-foreground/20"
-                }`}
-              >
-                <span
-                  className={`inline-block h-3 w-3 rounded-full shadow transition-transform duration-200 ${
-                    portfolioFilterActive
-                      ? "translate-x-3.5 bg-primary-foreground"
-                      : "translate-x-0.5 bg-muted-foreground/60"
-                  }`}
-                />
-              </span>
-            </button>
-          </div>
-        )}
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-4 flex flex-col gap-1">
@@ -155,9 +106,7 @@ export function Sidebar({
                     key={d}
                     type="button"
                     onClick={() => onSelectReport(d)}
-                    className={`${baseEntry} font-mono text-xs ${
-                      isActive ? active : idle
-                    }`}
+                    className={`${baseEntry} font-mono text-xs ${isActive ? active : idle}`}
                   >
                     <span className="text-primary/60">▸</span>
                     <span>{formatPtBr(d)}</span>

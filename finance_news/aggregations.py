@@ -277,15 +277,16 @@ def build_window_payload(
     daily = []
     cur = start
     while cur <= end:
-        c = daily_counts.get(cur, Counter())
-        pos, neu, neg = c["positive"], c["neutral"], c["negative"]
-        tot = pos + neu + neg
-        daily.append({
-            "date": cur.isoformat(),
-            "positive": pos, "neutral": neu, "negative": neg,
-            "total": tot,
-            "net": _tilt(pos, neg, tot),
-        })
+        if cur.weekday() < 5:  # weekdays only — stock market is closed on weekends
+            c = daily_counts.get(cur, Counter())
+            pos, neu, neg = c["positive"], c["neutral"], c["negative"]
+            tot = pos + neu + neg
+            daily.append({
+                "date": cur.isoformat(),
+                "positive": pos, "neutral": neu, "negative": neg,
+                "total": tot,
+                "net": _tilt(pos, neg, tot),
+            })
         cur = cur.fromordinal(cur.toordinal() + 1)
 
     top_subjects = [{"subject": s, "count": n} for s, n in subject_counter.most_common(15)]

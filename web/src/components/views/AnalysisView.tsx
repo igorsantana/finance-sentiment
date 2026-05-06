@@ -6,7 +6,6 @@ import { SentimentByPublisher } from "../charts/SentimentByPublisher";
 import { SentimentVsPriceChart } from "../charts/SentimentVsPriceChart";
 import { TopSubjects } from "../charts/TopSubjects";
 import { TopTickers } from "../charts/TopTickers";
-import { WindowSentimentLine } from "../charts/WindowSentimentLine";
 import { WindowVolumeBars } from "../charts/WindowVolumeBars";
 import { Combobox, type ComboboxOption } from "../ui/combobox";
 import { useAdvisor } from "../../hooks/useAdvisor";
@@ -23,31 +22,20 @@ import { formatPtBr } from "../../lib/date";
 const WINDOW_OPTIONS: WindowSize[] = [3, 7, 14];
 type Scope = "overall" | "company";
 
-export function AnalysisView({
-  portfolioFilter = false,
-  portfolioTickers = [],
-}: {
-  portfolioFilter?: boolean;
-  portfolioTickers?: string[];
-} = {}) {
+export function AnalysisView() {
   const [windowSize, setWindowSize] = useState<WindowSize>(7);
   const [scope, setScope] = useState<Scope>("overall");
-
-  const filterTickers =
-    portfolioFilter && portfolioTickers.length > 0 ? portfolioTickers : undefined;
 
   const {
     data: overallData,
     loading: overallLoading,
     error: overallError,
-  } = useTrendsOverall(windowSize, undefined, filterTickers);
+  } = useTrendsOverall(windowSize);
 
-  // Combobox source: a separate 7d fetch keeps the list stable when the user
-  // narrows the window to 3d. No ticker filter here — we want all tickers for
-  // the combobox even when the portfolio filter is active.
+  // Separate 7d fetch keeps the combobox list stable when the user narrows to 3d
   const { data: overall7 } = useTrendsOverall(7);
 
-  const allTickerOptions = useMemo<ComboboxOption[]>(() => {
+  const tickerOptions = useMemo<ComboboxOption[]>(() => {
     if (!overall7) return [];
     return overall7.topTickers.map((t) => ({
       value: t.ticker,
@@ -56,27 +44,11 @@ export function AnalysisView({
     }));
   }, [overall7]);
 
-  const tickerOptions = useMemo<ComboboxOption[]>(() => {
-    if (!portfolioFilter || portfolioTickers.length === 0) return allTickerOptions;
-    const set = new Set(portfolioTickers);
-    const filtered = allTickerOptions.filter((o) => set.has(o.value));
-    if (filtered.length > 0) return filtered;
-    // Portfolio tickers not in the 7d window — show them anyway without hints
-    return portfolioTickers.map((t) => ({ value: t, label: t }));
-  }, [allTickerOptions, portfolioFilter, portfolioTickers]);
-
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
   useEffect(() => {
-    if (portfolioFilter && portfolioTickers.length > 0) {
-      // When filter activates, default to first portfolio ticker
-      if (!portfolioTickers.includes(selectedTicker ?? "")) {
-        setSelectedTicker(portfolioTickers[0]);
-      }
-      return;
-    }
     if (selectedTicker && tickerOptions.some((o) => o.value === selectedTicker)) return;
     setSelectedTicker(tickerOptions[0]?.value ?? null);
-  }, [tickerOptions, selectedTicker, portfolioFilter, portfolioTickers]);
+  }, [tickerOptions, selectedTicker]);
 
   const {
     data: companyData,
@@ -209,21 +181,14 @@ function OverallPanel({
 }) {
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard
-          title="Sentimento ao longo do período"
-          subtitle={data ? `${data.counts.total} artigos` : undefined}
-        >
-          <Body loading={loading} error={error} hasData={!!data} h={56}>
-            {data && <WindowSentimentLine data={data.daily} />}
-          </Body>
-        </ChartCard>
-        <ChartCard title="Volume diário">
-          <Body loading={loading} error={error} hasData={!!data} h={56}>
-            {data && <WindowVolumeBars data={data.daily} />}
-          </Body>
-        </ChartCard>
-      </div>
+      <ChartCard
+        title="Volume e sentimento diário"
+        subtitle={data ? `${data.counts.total} artigos` : undefined}
+      >
+        <Body loading={loading} error={error} hasData={!!data} h={56}>
+          {data && <WindowVolumeBars data={data.daily} />}
+        </Body>
+      </ChartCard>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ChartCard title="Setores">
           <Body loading={loading} error={error} hasData={!!data} h={48}>
@@ -274,23 +239,14 @@ function CompanyPanel({
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard
-          title="Sentimento × Cotação"
-          subtitle={corrLabel ?? undefined}
-        >
-          <Body loading={loading} error={error} hasData={!!data} h={72}>
-            {data && (
-              <SentimentVsPriceChart data={{ points: data.daily }} />
-            )}
-          </Body>
-        </ChartCard>
-        <ChartCard title="Volume × Sentimento">
-          <Body loading={loading} error={error} hasData={!!data} h={72}>
-            {data && <WindowVolumeBars data={data.daily} />}
-          </Body>
-        </ChartCard>
-      </div>
+      <ChartCard
+        title="Sentimento × Cotação"
+        subtitle={corrLabel ?? undefined}
+      >
+        <Body loading={loading} error={error} hasData={!!data} h={72}>
+          {data && <SentimentVsPriceChart data={{ points: data.daily }} />}
+        </Body>
+      </ChartCard>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ChartCard title="Top assuntos">
           <Body loading={loading} error={error} hasData={!!data} h={48}>

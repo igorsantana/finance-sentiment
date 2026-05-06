@@ -162,9 +162,13 @@ export async function getAdvisor(
   window: WindowSize,
   end?: string,
   signal?: AbortSignal,
+  tickers?: string[],
 ): Promise<AdvisorNarrative | null> {
   const qs = new URLSearchParams({ window: String(window) });
   if (end) qs.set("end", end);
+  if (scope === "overall" && tickers && tickers.length > 0) {
+    qs.set("tickers", tickers.join(","));
+  }
   const path =
     scope === "overall"
       ? `/api/advisor/overall?${qs}`
