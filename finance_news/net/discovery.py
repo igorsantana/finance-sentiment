@@ -1,4 +1,4 @@
-"""Google News RSS discovery — the only stream we keep.
+"""News discovery: Google News RSS + DuckDuckGo News.
 
 The old site-stream helpers (``discover_rss``, ``discover_homepage``,
 ``discover``, plus ``RSS_PATHS`` / ``EXCLUDE_PATH_TOKENS`` / ``SLUGGY``) were
@@ -82,6 +82,37 @@ def google_news_feed(
             )
         )
     return cands
+
+
+def duckduckgo_news_feed(query: str, max_results: int = 10) -> list[Candidate]:
+    """Query DuckDuckGo News and return Candidates with direct publisher URLs.
+
+    Returns real publisher URLs — callers do NOT need resolve_google_news_batch().
+    Soft-fails to empty list on import error or network/rate-limit error.
+    """
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        log.warning("ddgs not installed — run: pip install ddgs")
+        return []
+    try:
+        results = DDGS(timeout=10).news(query, region="br-pt", max_results=max_results) or []
+    except Exception as e:
+        log.debug("duckduckgo_news_feed %r failed: %s", query, e)
+        return []
+    out: list[Candidate] = []
+    for r in results:
+        url = r.get("url")
+        if not url:
+            continue
+        pub: Optional[datetime] = None
+        if r.get("date"):
+            try:
+                pub = dateparser.parse(r["date"])
+            except Exception:
+                pass
+        out.append(Candidate(url=url, title=r.get("title"), published=pub))
+    return out
 
 
 def filter_today(

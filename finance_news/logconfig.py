@@ -39,6 +39,8 @@ def silence_third_party() -> None:
         "trafilatura.htmlprocessing",
         "feedparser",
         "charset_normalizer",
+        "ddgs",
+        "duckduckgo_search",
     ):
         logging.getLogger(name).setLevel(logging.ERROR)
 
