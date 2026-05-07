@@ -169,6 +169,27 @@ def run_full(
     )
 
 
+def run_cvm_ingest(
+    target_date: Optional[date] = None,
+    progress: Optional[ProgressFn] = None,
+    setup_logging: bool = True,
+) -> RunSummary:
+    if setup_logging:
+        _setup_logging()
+    run_id, started = _start("cvm")
+    try:
+        from finance_news import ingest
+        n = ingest.run_cvm_ingest(target_date=target_date, progress=progress)
+    except Exception as e:
+        _finish(run_id, status="error", error=repr(e))
+        raise
+    _finish(run_id, status="ok", n_fetched=n)
+    return RunSummary(
+        kind="cvm", run_id=run_id, started_at=started,
+        finished_at=datetime.now(timezone.utc), status="ok", n_fetched=n,
+    )
+
+
 def pipeline_status() -> dict[str, Any]:
     """Snapshot of recent activity: row counts + last 5 runs per kind."""
     with db.connect() as conn, conn.cursor() as cur:
@@ -199,7 +220,7 @@ def pipeline_status() -> dict[str, Any]:
 
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="python -m finance_news.pipeline")
-    p.add_argument("subcommand", choices=("ingest", "extract", "summarize", "run", "status"))
+    p.add_argument("subcommand", choices=("ingest", "extract", "summarize", "run", "cvm", "status"))
     p.add_argument("--date", help="ISO date (YYYY-MM-DD); default = today in BRT.")
     args = p.parse_args(argv)
     target_date = date.fromisoformat(args.date) if args.date else None
@@ -212,6 +233,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         run_summarize(target_date=target_date)
     elif args.subcommand == "run":
         run_full(target_date=target_date)
+    elif args.subcommand == "cvm":
+        run_cvm_ingest(target_date=target_date)
     elif args.subcommand == "status":
         import json
         print(json.dumps(pipeline_status(), default=str, indent=2))

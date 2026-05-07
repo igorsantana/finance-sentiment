@@ -38,7 +38,7 @@ from pydantic import BaseModel
 
 from finance_news.aggregations import build_report_payload, build_window_payload
 from finance_news.nlp.companies import load_companies_from_db
-from finance_news.pipeline import run_full, run_ingest, run_extract, run_summarize
+from finance_news.pipeline import run_cvm_ingest, run_full, run_ingest, run_extract, run_summarize
 from finance_news.stocks import fetch_ohlc_trailing, fetch_ohlc_window
 from finance_news.store import db
 
@@ -153,6 +153,8 @@ def _run_in_thread(rid: str, ch: RunChannel, target_date: date, kind: str = "ful
                 summary = run_extract(target_date=target_date, progress=on_progress, setup_logging=False)
             elif kind == "summarize":
                 summary = run_summarize(target_date=target_date, progress=on_progress, setup_logging=False)
+            elif kind == "cvm":
+                summary = run_cvm_ingest(target_date=target_date, progress=on_progress, setup_logging=False)
             else:
                 ingest_s = run_ingest(target_date=target_date, progress=on_progress, setup_logging=False)
                 _check_stop()
@@ -192,7 +194,7 @@ def _run_in_thread(rid: str, ch: RunChannel, target_date: date, kind: str = "ful
 
 class StartRunBody(BaseModel):
     date: date
-    kind: str = "full"  # "ingest", "extract", or "full"
+    kind: str = "full"  # "ingest", "extract", "summarize", "cvm", or "full"
 
 
 @app.post("/api/runs")
