@@ -9,13 +9,25 @@ slightly wider calendar window (±21 days) to guarantee enough trading
 days survive holidays/weekends, then trim to exactly 10 either side of
 ``day`` (or to whichever bars yfinance returned, when ``day`` itself is
 near the edges of available history).
+
+Cache freshness
+---------------
+A naive "cache is non-empty → return it" check causes today's bar to
+silently disappear from the calendar/portfolio views: the cache might
+hold yesterday's bar and we'd never ask yfinance again until the cache
+went fully empty. ``_expected_latest_session`` derives the most recent
+B3 session that *should* exist for a given window-end date (after the
+18:30 SP cutoff today's session counts; before it we only expect
+yesterday's). If the cache's latest bar is older than that, we hit
+yfinance, upsert, and re-read.
 """
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from finance_news.store import db
 
@@ -23,6 +35,11 @@ log = logging.getLogger("stocks")
 
 CALENDAR_PADDING_DAYS = 21
 DEFAULT_SPAN = 10
+SP_TZ = ZoneInfo("America/Sao_Paulo")
+# B3 closes at 18:00 BRT. yfinance usually publishes the daily bar
+# shortly after; 18:30 gives it a comfortable buffer without dragging
+# the "today is settled" moment too far into the evening.
+B3_CLOSE_CUTOFF = time(18, 30)
 # Bars with all-NaN OHLC values (today's still-trading session before
 # yfinance has filled it in) are rejected at insertion time — stale daily
 # data is worse than missing data for a candle chart.
@@ -85,6 +102,17 @@ def _fetch_from_yfinance(symbol: str, start: date, end: date) -> list[dict[str, 
                 # Today's bar before market close, or a holiday yfinance
                 # included by mistake. Skip rather than poison the cache.
                 continue
+            if min(o, h, lo, c) <= 0:
+                # yfinance occasionally returns a "snapshot" bar for indices
+                # (notably ^BVSP) where Close is the latest tick but Open /
+                # High / Low are literal zeros. Such a row would render as a
+                # giant null candle and breaks ``(close - open) / open``
+                # math; skip until yfinance publishes a real daily bar.
+                log.debug(
+                    "%s: skipping malformed bar at %s (O=%s H=%s L=%s C=%s)",
+                    symbol, bar_date, o, h, lo, c,
+                )
+                continue
             bars.append({
                 "bar_date": bar_date,
                 "open": Decimal(str(round(o, 4))),
@@ -142,7 +170,7 @@ def fetch_ohlc_window(
     end = day + timedelta(days=CALENDAR_PADDING_DAYS)
 
     cached = db.fetch_ohlc_range(conn, ticker_root=ticker_root, start=start, end=end)
-    if cached:
+    if not _cache_is_stale(cached, day):
         return _trim_to_span(_normalize_cached(cached), day, span)
 
     symbol = _resolve_symbol(conn, ticker_root)
@@ -162,6 +190,57 @@ def _normalize_cached(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def _previous_business_day(d: date) -> date:
+    """Return the most recent weekday strictly before ``d``."""
+    cur = d - timedelta(days=1)
+    while cur.weekday() >= 5:
+        cur -= timedelta(days=1)
+    return cur
+
+
+def _expected_latest_session(end: date) -> Optional[date]:
+    """Most recent B3 trading day that *should* be in the cache for a
+    request bounded by ``end``.
+
+    * Future ``end`` is clamped to today.
+    * Weekends count as the previous Friday.
+    * For today specifically, we only expect today's bar after
+      ``B3_CLOSE_CUTOFF``; before then we expect yesterday's session.
+    * Returns ``None`` for ``end`` so far in the past that the answer is
+      just ``end`` itself (a weekday) — caller should treat that as the
+      target.
+    """
+    today_sp = datetime.now(SP_TZ).date()
+    target = min(end, today_sp)
+
+    while target.weekday() >= 5:
+        target -= timedelta(days=1)
+
+    if target == today_sp:
+        now_sp = datetime.now(SP_TZ).time()
+        if now_sp < B3_CLOSE_CUTOFF:
+            target = _previous_business_day(today_sp)
+
+    return target
+
+
+def _cache_is_stale(
+    cached: list[dict[str, Any]], end: date,
+) -> bool:
+    """True when the cache is missing the most recent expected session.
+
+    Empty cache always counts as stale. For non-empty caches we compare
+    the latest cached bar against ``_expected_latest_session(end)``.
+    """
+    if not cached:
+        return True
+    expected = _expected_latest_session(end)
+    if expected is None:
+        return False
+    latest = max(b["bar_date"] for b in cached)
+    return latest < expected
+
+
 def fetch_ohlc_trailing(
     conn,
     ticker_root: str,
@@ -171,15 +250,16 @@ def fetch_ohlc_trailing(
 ) -> list[dict[str, Any]]:
     """Daily bars in the trailing window ``[end - (days - 1), end]``.
 
-    Hits the ``stock_ohlc`` cache first; on miss, pulls a wider calendar
-    window from yfinance (`2 * days` calendar days back from ``end``)
-    so weekends/holidays don't starve the cache, then re-reads.
+    Hits the ``stock_ohlc`` cache first; if the cache is empty *or* its
+    latest bar is older than the most recent expected B3 session for
+    ``end``, pulls a wider calendar window from yfinance (`2 * days`
+    calendar days back from ``end``) and re-reads.
     """
     start = end - timedelta(days=days - 1)
     fetch_start = end - timedelta(days=2 * days)
 
     cached = db.fetch_ohlc_range(conn, ticker_root=ticker_root, start=start, end=end)
-    if cached:
+    if not _cache_is_stale(cached, end):
         return _normalize_cached(cached)
 
     symbol = _resolve_symbol(conn, ticker_root)
