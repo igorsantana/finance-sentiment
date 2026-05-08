@@ -27,7 +27,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 import requests as _requests
 
@@ -299,6 +299,82 @@ def _wait_events(ch: RunChannel, idx: int, timeout: float) -> tuple[list[dict[st
         return ch.events[idx:], ch.finished
 
 
+def _today_sp_date() -> date:
+    """Today in São Paulo (matches how articles' SP-day is computed)."""
+    from datetime import datetime, timezone
+    sp = datetime.now(timezone.utc).astimezone()
+    # Postgres queries already cast to America/Sao_Paulo; do the same here.
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+
+
+def _yfinance_snapshot(symbol: str) -> Optional[dict[str, float]]:
+    """Return ``{price, open, prev_close}`` for a yfinance symbol or ``None``.
+
+    Used for indices like ``^BVSP`` where the daily history endpoint
+    occasionally returns a malformed bar (open=0) for the current
+    session. ``fast_info`` exposes the same numbers as ``info`` without
+    the extra HTTP roundtrips.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return None
+    try:
+        fi = yf.Ticker(symbol).fast_info
+    except Exception:
+        return None
+
+    def _read(*names: str) -> Optional[float]:
+        for n in names:
+            try:
+                v = fi[n] if n in fi else getattr(fi, n, None)  # type: ignore[index]
+            except Exception:
+                v = None
+            if v is None:
+                continue
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            if f > 0:
+                return f
+        return None
+
+    price = _read("last_price", "lastPrice", "regular_market_previous_close")
+    if price is None:
+        return None
+    return {
+        "price": price,
+        "open": _read("open"),
+        "prev_close": _read("previous_close", "previousClose", "regular_market_previous_close"),
+    }
+
+
+def _intraday_change_pct(
+    snapshot: dict[str, float],
+    cached_prev_close: Optional[float] = None,
+) -> Optional[float]:
+    """Convert a live snapshot to a daily-return percentage.
+
+    Prefers the open-to-current move (matches what we report for past
+    days). Falls back to previous-close-to-current when the snapshot
+    itself can't supply a good open. ``cached_prev_close`` lets the
+    caller provide yesterday's settled close from the OHLC cache when
+    the live source doesn't expose it.
+    """
+    price = snapshot.get("price")
+    if not price:
+        return None
+    open_ = snapshot.get("open")
+    if open_ and open_ > 0:
+        return (price - open_) / open_ * 100
+    prev = snapshot.get("prev_close") or cached_prev_close
+    if prev and prev > 0:
+        return (price - prev) / prev * 100
+    return None
+
+
 @app.get("/api/calendar")
 def get_calendar(
     month: str,
@@ -310,6 +386,12 @@ def get_calendar(
     ``month`` must be ``YYYY-MM``.  Returns per-day entries covering every day
     in the month, including weekends.  Optional ``tickers`` (comma-separated)
     and ``quantities`` (comma-separated floats) enable per-day portfolio return.
+
+    For *today's* row specifically, when the cached daily bars are
+    missing (yfinance hasn't published the settled bar yet) we fall back
+    to a live snapshot — yfinance's ``fast_info`` for ``^BVSP`` and
+    BrAPI for portfolio tickers — so the operator sees a meaningful
+    intraday number instead of an empty cell.
     """
     import calendar as _calendar
     try:
@@ -337,8 +419,39 @@ def get_calendar(
             bars = fetch_ohlc_trailing(conn, ticker, end, days=fetch_days)
             portfolio_bars[ticker] = {b["bar_date"]: b for b in bars}
 
+        # Resolve ticker_root → full ".SA" symbol once, for the BrAPI fallback.
+        root_to_full: dict[str, str] = {}
+        if ticker_list:
+            for c in load_companies_from_db():
+                if c["ticker_root"] in ticker_list:
+                    root_to_full[c["ticker_root"]] = c["ticker"]
+
     by_day = {r["day"]: r for r in sentiment_rows}
     ibov_by_day = {b["bar_date"]: b for b in ibov_bars}
+
+    today_sp = _today_sp_date()
+    needs_today_fallback = start <= today_sp <= end
+
+    # ---------- live-snapshot fallback for the "today" row only ----------
+    ibov_today_snapshot: Optional[dict[str, float]] = None
+    portfolio_today_quotes: dict[str, dict] = {}
+    if needs_today_fallback:
+        if ibov_by_day.get(today_sp) is None:
+            ibov_today_snapshot = _yfinance_snapshot("^BVSP")
+        missing_portfolio_today = ticker_list and any(
+            portfolio_bars.get(t, {}).get(today_sp) is None for t in ticker_list
+        )
+        if missing_portfolio_today and root_to_full:
+            full_syms = [root_to_full[t] for t in ticker_list if t in root_to_full]
+            portfolio_today_quotes = _brapi_quotes(full_syms)
+
+    def _prev_close_for(ticker_root: str, day: date) -> Optional[float]:
+        bars = portfolio_bars.get(ticker_root, {}) if ticker_root != "^BVSP" else ibov_by_day
+        prev_dates = sorted(d for d in bars if d < day)
+        if not prev_dates:
+            return None
+        prev = bars[prev_dates[-1]]
+        return float(prev["close"]) if prev.get("close") is not None else None
 
     days = []
     cur = start
@@ -354,8 +467,13 @@ def get_calendar(
             if ibov and ibov.get("open") and float(ibov["open"]) != 0
             else None
         )
+        if ibov_change is None and cur == today_sp and ibov_today_snapshot:
+            ibov_change = _intraday_change_pct(
+                ibov_today_snapshot,
+                cached_prev_close=_prev_close_for("^BVSP", today_sp),
+            )
 
-        # Portfolio return: quantity-weighted average of intraday returns
+        # Portfolio return: quantity-weighted average of intraday returns.
         portfolio_change: float | None = None
         if ticker_list:
             weighted, weight_sum = 0.0, 0.0
@@ -365,6 +483,21 @@ def get_calendar(
                     day_ret = float(bar["close"] - bar["open"]) / float(bar["open"])
                     weighted += day_ret * qty
                     weight_sum += qty
+                elif cur == today_sp:
+                    full = root_to_full.get(ticker)
+                    quote = portfolio_today_quotes.get(full) if full else None
+                    if quote:
+                        ret_pct = _intraday_change_pct(
+                            {
+                                "price": quote.get("price"),
+                                "open": quote.get("open"),
+                                "prev_close": None,
+                            },
+                            cached_prev_close=_prev_close_for(ticker, today_sp),
+                        )
+                        if ret_pct is not None:
+                            weighted += (ret_pct / 100) * qty
+                            weight_sum += qty
             if weight_sum > 0:
                 portfolio_change = weighted / weight_sum * 100
 
@@ -660,7 +793,6 @@ def get_advisor_company(
         daily=payload["daily"],
         correlation=payload["correlation"],
         top_subjects=payload["topSubjects"],
-        top_publishers=payload["topPublishers"],
     )
     if result is None:
         raise HTTPException(status_code=503, detail="advisor unavailable")
