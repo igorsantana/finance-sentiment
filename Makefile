@@ -1,4 +1,4 @@
-.PHONY: help build up down nuke logs ps migrate psql db-reset companies ingest extract full judge judge-stats shell status dev
+.PHONY: help build up down nuke logs ps migrate psql db-reset companies ingest extract full judge judge-stats shell status dev probe
 
 COMPOSE  := docker compose
 EXEC     := $(COMPOSE) exec -T app
@@ -72,3 +72,6 @@ dev: ## Live-reload backend (uvicorn --reload) + frontend (vite). Ctrl-C stops b
 	$(COMPOSE) up app db cron & \
 	(cd web && npm install --silent && npm run dev) & \
 	wait
+
+probe: ## Health-check every discovery adapter for today (SP)
+	$(EXEC) python scripts/diagnostics/probe_rss.py

@@ -1,9 +1,43 @@
-"""Company-stream ingest: query Google News per tracked company, fetch the
-articles, write them into the ``articles`` table.
+"""Daily ingest — per-publisher discovery + CompanyMatcher fold.
 
-URL dedup is handled at the DB level via ``ON CONFLICT (url) DO NOTHING`` —
-no in-memory ``seen_urls`` set, no JSONL sidecar. The legacy site-stream
-(``process_site``, ``read_sources``, ``--mode``) was removed in this rewrite.
+The previous per-company Google News + DuckDuckGo loop was retired in
+favour of fanning out across a curated set of pt-BR finance publishers
+once per run (see ``finance_news.net.discovery``). Two architectural
+wins:
+
+* No third-party search-index dependency. Everything we hit is a
+  direct publisher endpoint (WordPress REST, RSS, or the publisher's
+  own listing page). No Google News URL decoding, no DDG rate limits.
+* Per-publisher cost is constant in the number of tracked companies.
+  Adding a 1 000th company adds matcher CPU, not HTTP calls.
+
+Pipeline shape (per run):
+
+    discovery.discover_articles(day)   # 19 adapters in parallel, dedup
+        ↓
+    pre-match (title + excerpt)        # drop articles that don't mention
+                                       #   any tracked company
+        ↓
+    fetch bodies (ThreadPoolExecutor)
+        ↓
+    SP-day check + Portuguese gate (in fetch._extract)
+        ↓
+    upsert_article(... source_ticker = first matched ticker_root)
+
+The downstream extract stage (``finance_news.extract``) re-runs the
+matcher over the full body and authoritatively populates
+``articles.matched_tickers``. ``source_ticker`` here is just a
+backwards-compatibility breadcrumb for "what surfaced this article".
+
+Logs are deliberately verbose: each stage emits an INFO line on entry
+and exit, the discovery module reports each publisher's result as it
+completes, and the body-fetch loop streams a percent-progress line every
+~10 % of the way through. The FastAPI SSE channel forwards every INFO
+record straight to the web client's Logs panel, so the operator sees
+the run move in real time.
+
+CVM ingest (``run_cvm_ingest``) remains a separate flow — it works off
+regulatory filings, not news, and is orthogonal to publisher discovery.
 """
 from __future__ import annotations
 
@@ -14,10 +48,10 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from typing import Any, Callable, Optional
-
-ProgressFn = Callable[[str, int, int], None]
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
+
+ProgressFn = Callable[[str, int, int], None]
 
 try:
     from dotenv import load_dotenv
@@ -26,18 +60,26 @@ except ImportError:
     pass
 
 from finance_news import logconfig
-from finance_news.net import discovery, fetch
-from finance_news.nlp.companies import load_companies_from_db
+from finance_news.net import discovery
+from finance_news.net.fetch import fetch_article_direct
+from finance_news.nlp.companies import (
+    CompanyMatcher,
+    load_companies_from_db,
+    to_company,
+)
 from finance_news.store import db
 from finance_news.store.publishers import publisher_from_url
 
 log = logging.getLogger("ingest")
 
 SP_TZ = ZoneInfo("America/Sao_Paulo")
-PER_COMPANY_ARTICLE_CAP = 8
-INTER_ARTICLE_SLEEP = 1.0
-INTER_SOURCE_SLEEP = 1.0    # DDG: 4 workers × 1s ≤ 4 req/sec globally
-_GNEWS_PREFIX = "https://news.google.com/"
+
+# Soft pacing for body fetches. Each publisher sees roughly
+# (n_articles_for_that_publisher / WORKERS) requests in flight at once;
+# at WORKERS=4 and the typical ~30 articles/day per publisher that's a
+# trickle. The sleep here is just so we never hammer a single host
+# with a tight loop.
+INTER_FETCH_SLEEP_S = 0.25
 
 
 def _env_workers(default: int = 4) -> int:
@@ -60,118 +102,85 @@ def _host_key(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def _company_query(company: dict[str, Any]) -> str:
-    """Google News query for a single company row.
+# ---------- pre-match stage ----------
 
-    Preference order: short_name (tight match) → long_name → ticker. Quoted
-    short/long names keep precision high; the bare ticker catches market
-    reports that reference codes but not full names.
+def _prematch(
+    article: discovery.DiscoveredArticle,
+    matcher: CompanyMatcher,
+) -> list[str]:
+    """Run the matcher over ``title + " " + excerpt`` and return a list
+    of matched ``ticker_root``s (possibly empty).
+
+    This is a coarse triage so we don't waste a body fetch on articles
+    that clearly don't mention any tracked company. The downstream
+    extract stage re-runs the matcher over the full body — anything that
+    only surfaces a company in paragraph 4 will be picked up there, but
+    it'll only be picked up *if* the article body was stored, which
+    means the title-or-excerpt match already passed.
+
+    Without a spaCy ``doc``, ambiguous aliases (``vale``, ``rumo``, …)
+    are rejected by the context gate inside ``CompanyMatcher.match`` —
+    that's the conservative behaviour we want for headline-only
+    matching.
     """
-    terms: list[str] = []
-    short = (company.get("short_name") or "").strip()
-    long_ = (company.get("long_name") or "").strip()
-    ticker = (company.get("ticker") or "").strip().upper()
-    root = (company.get("ticker_root") or "").strip().upper()
-    if short:
-        terms.append(f'"{short}"')
-    if long_ and long_.lower() != short.lower():
-        terms.append(f'"{long_}"')
-    if ticker:
-        terms.append(ticker)
-    if root and root != ticker:
-        terms.append(root)
-    return " OR ".join(terms)
-
-
-def process_company(company: dict[str, Any], today: date) -> list[dict[str, Any]]:
-    ticker = (company.get("ticker") or "").strip().upper()
-    short = company.get("short_name") or company.get("long_name") or ticker
-    query = _company_query(company)
-    if not query:
+    text_parts = [p for p in (article.title, article.excerpt) if p]
+    if not text_parts:
         return []
-    log.info("==> company %s (%s) query=%r", ticker, short, query)
+    text = " ".join(text_parts)
+    matches, _emb = matcher.match(text, title=article.title or "")
+    return [m.ticker_root for m in matches]
 
-    # Google News RSS candidates (wrapped URLs, need batch decode)
+
+# ---------- body fetch stage ----------
+
+def _fetch_and_pack(
+    article: discovery.DiscoveredArticle,
+    matched_roots: list[str],
+    day: date,
+) -> Optional[dict[str, Any]]:
+    """Fetch the article body and assemble the row we'll upsert.
+
+    Returns ``None`` (and the caller drops the article) when:
+    * the body fetch fails (network / 4xx / 5xx),
+    * trafilatura can't extract usable text,
+    * the article is not in Portuguese,
+    * the published date doesn't fall in the target SP day.
+
+    The published-at preferred source is the listing-stage timestamp
+    (``article.published_at``) because the publisher's listing carries
+    the canonical publication time; we fall back to whatever
+    trafilatura parsed out of the article HTML when the listing didn't
+    expose a date.
+    """
     try:
-        gn_cands = discovery.google_news_feed(query)
+        art = fetch_article_direct(article.url)
     except Exception as e:
-        log.debug("%s: google news failed: %s", ticker, e)
-        gn_cands = []
+        log.debug("fetch failed %s: %s", article.url, e)
+        return None
+    if art is None:
+        return None
+    pub = article.published_at or art.published
+    if pub is None:
+        return None
+    pub_aware = pub if pub.tzinfo else pub.replace(tzinfo=ZoneInfo("UTC"))
+    if pub_aware.astimezone(SP_TZ).date() != day:
+        return None
+    return {
+        "url": art.url,
+        "title": art.title or article.title,
+        "text": art.text,
+        "author": art.author,
+        "hostname": _host_key(art.url),
+        "published_at": pub_aware,
+        # Pre-match said this URL mentions ≥1 tracked company; pick the
+        # first as a backwards-compatibility breadcrumb for the existing
+        # ``source_ticker`` column. The full set lands in
+        # ``matched_tickers`` after the extract stage runs.
+        "source_ticker": matched_roots[0] if matched_roots else None,
+    }
 
-    # DuckDuckGo News candidates (direct publisher URLs, no decode needed)
-    ddg_cands: list[discovery.Candidate] = []
-    try:
-        ddg_cands = discovery.duckduckgo_news_feed(query)
-        time.sleep(INTER_SOURCE_SLEEP)
-    except Exception as e:
-        log.debug("%s: ddg failed: %s", ticker, e)
 
-    # Merge: DDG direct URLs first so dedup prefers them over wrapped GNews URLs
-    all_cands = discovery.filter_today(ddg_cands + gn_cands, today)
-    seen: set[str] = set()
-    merged: list[discovery.Candidate] = []
-    for c in all_cands:
-        if c.url not in seen:
-            seen.add(c.url)
-            merged.append(c)
-    merged = merged[:PER_COMPANY_ARTICLE_CAP]
-    log.info("%s: %d merged candidates (ddg=%d gnews=%d)",
-             ticker, len(merged), len(ddg_cands), len(gn_cands))
-    if not merged:
-        return []
-
-    # Partition: GNews-wrapped URLs need one batch decode POST; DDG URLs are already real
-    gnews_batch = [c for c in merged if c.url.startswith(_GNEWS_PREFIX)]
-    direct_batch = [c for c in merged if not c.url.startswith(_GNEWS_PREFIX)]
-
-    resolved_map: dict[str, str | None] = {}
-    if gnews_batch:
-        decoded = fetch.resolve_google_news_batch([c.url for c in gnews_batch])
-        resolved_map = {c.url: r for c, r in zip(gnews_batch, decoded)}
-        log.info("%s: %d/%d GNews URLs decoded",
-                 ticker, sum(1 for v in resolved_map.values() if v), len(gnews_batch))
-
-    # Unified (candidate, real_url) pairs — GNews first then DDG direct
-    pairs: list[tuple[discovery.Candidate, str | None]] = (
-        [(c, resolved_map[c.url]) for c in gnews_batch] +
-        [(c, c.url) for c in direct_batch]
-    )
-
-    out: list[dict[str, Any]] = []
-    for c, real_url in pairs:
-        if real_url is None:
-            time.sleep(INTER_ARTICLE_SLEEP)
-            continue
-        try:
-            art = fetch.fetch_article_direct(real_url)
-        except Exception as e:
-            log.debug("%s: fetch failed %s: %s", ticker, real_url, e)
-            time.sleep(INTER_ARTICLE_SLEEP)
-            continue
-        if art is None:
-            time.sleep(INTER_ARTICLE_SLEEP)
-            continue
-        pub = c.published or art.published
-        if pub is None:
-            time.sleep(INTER_ARTICLE_SLEEP)
-            continue
-        pub_aware = pub if pub.tzinfo else pub.replace(tzinfo=ZoneInfo("UTC"))
-        if pub_aware.astimezone(SP_TZ).date() != today:
-            time.sleep(INTER_ARTICLE_SLEEP)
-            continue
-        out.append({
-            "url": art.url,
-            "title": art.title or c.title,
-            "text": art.text,
-            "author": art.author,
-            "hostname": _host_key(art.url),
-            "published_at": pub,
-            "source_ticker": company.get("ticker_root"),
-        })
-        time.sleep(INTER_ARTICLE_SLEEP)
-    log.info("%s: kept %d articles", ticker, len(out))
-    return out
-
+# ---------- driver ----------
 
 def run(
     target_date: Optional[date] = None,
@@ -180,57 +189,142 @@ def run(
     """Ingest one full pass. Returns the number of new article rows inserted."""
     logconfig.silence_third_party()
     day = target_date or _today_sp()
-    companies = load_companies_from_db()
-    if not companies:
-        log.error("companies table is empty — run scripts/fetch_top_companies.py")
+
+    company_rows = load_companies_from_db()
+    if not company_rows:
+        log.error("companies table is empty — run scripts/companies/fetch_top.py")
         return 0
 
+    matcher = CompanyMatcher([to_company(c) for c in company_rows])
     workers = _env_workers()
-    total = len(companies)
-    log.info("Target day: %s | %d companies | %d worker(s)",
-             day, total, workers)
+    log.info(
+        "Starting ingest — date=%s, %d companies, %d worker(s)",
+        day, len(company_rows), workers,
+    )
+
+    # --- Stage 1: discovery ----------------------------------------------
+    # The TopBar in the web UI only knows the "ingest" / "extract" /
+    # "summarize" stage IDs, so we report discovery progress as ingest
+    # progress (the operator sees the bar move during the listing fanout
+    # instead of staring at 0 % for ~10 s).
+    adapter_count = len(discovery.default_adapters())
+    if progress:
+        progress("ingest", 0, adapter_count)
+
+    def _on_adapter_done(completed: int, total: int) -> None:
+        if progress:
+            progress("ingest", completed, total)
+
+    t_disc = time.perf_counter()
+    discovered, adapter_results = discovery.discover_articles(
+        day, on_progress=_on_adapter_done,
+    )
+    disc_s = time.perf_counter() - t_disc
+    n_listed_raw = sum(len(r.articles) for r in adapter_results)
+    n_failed = sum(1 for r in adapter_results if r.error)
+    n_ok = len(adapter_results) - n_failed
+    log.info(
+        "Discovery done — %d article(s) listed, %d unique after dedup, %.2fs · "
+        "%d publisher(s) OK, %d with errors",
+        n_listed_raw, len(discovered), disc_s, n_ok, n_failed,
+    )
+
+    # --- Stage 2: pre-match (title + excerpt) ----------------------------
+    log.info("Pre-matching %d article(s) against %d tracked companies…",
+             len(discovered), len(company_rows))
+    candidates: list[tuple[discovery.DiscoveredArticle, list[str]]] = []
+    for art in discovered:
+        roots = _prematch(art, matcher)
+        if roots:
+            candidates.append((art, roots))
+    log.info(
+        "Pre-match done — %d/%d article(s) mention ≥1 tracked company",
+        len(candidates), len(discovered),
+    )
+    if not candidates:
+        log.info("Nothing to fetch — exiting.")
+        if progress:
+            progress("ingest", 1, 1)
+        return 0
+
+    # --- Stage 3: body fetch ---------------------------------------------
+    total = len(candidates)
+    log.info("Fetching article bodies — %d candidate(s) with %d worker(s)…",
+             total, workers)
     if progress:
         progress("ingest", 0, total)
 
+    # Stream a percent-progress log roughly every 10 % of the way through.
+    # Floor at 5 so very small runs still emit at least a couple of lines.
+    progress_log_every = max(5, total // 10)
+
     inserted = 0
     done = 0
+    rows_to_write: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(process_company, c, day): c for c in companies}
-        # Threads return article dicts; the main thread owns the DB connection
-        # so we don't have to share psycopg connections across workers.
-        with db.connect() as conn:
-            for fut in as_completed(futures):
-                company = futures[fut]
-                ticker = company.get("ticker", "?")
-                done += 1
-                try:
-                    arts = fut.result()
-                except Exception as e:
-                    log.warning("%s crashed: %s", ticker, e)
-                    if progress:
-                        progress("ingest", done, total)
-                    continue
-                for art in arts:
-                    site = publisher_from_url(conn, art["url"])
-                    if db.upsert_article(
-                        conn,
-                        url=art["url"],
-                        title=art["title"],
-                        text=art["text"],
-                        author=art["author"],
-                        site=site,
-                        hostname=art["hostname"],
-                        published_at=art["published_at"],
-                        source_ticker=art["source_ticker"],
-                    ):
-                        inserted += 1
-                if progress:
-                    progress("ingest", done, total)
-            conn.commit()
+        futures = {
+            ex.submit(_fetch_and_pack, art, roots, day): art
+            for art, roots in candidates
+        }
+        for fut in as_completed(futures):
+            art = futures[fut]
+            done += 1
+            try:
+                row = fut.result()
+            except Exception as e:
+                log.debug("worker crashed for %s: %s", art.url, e)
+                row = None
+            if row is not None:
+                rows_to_write.append(row)
+            if progress:
+                progress("ingest", done, total)
+            if done % progress_log_every == 0 and done < total:
+                pct = round(done * 100 / total)
+                log.info(
+                    "  %d/%d (%d%%) processed · %d with text so far",
+                    done, total, pct, len(rows_to_write),
+                )
+            time.sleep(INTER_FETCH_SLEEP_S)
 
-    log.info("Ingest complete — %d new article(s) inserted", inserted)
+    log.info(
+        "Body fetch done — %d/%d candidate(s) yielded text",
+        len(rows_to_write), total,
+    )
+
+    # --- Stage 4: persist ------------------------------------------------
+    # Single-thread the DB write so we don't share connections between
+    # workers; all the heavy lifting is done.
+    if rows_to_write:
+        log.info("Persisting %d article(s) to database…", len(rows_to_write))
+    with db.connect() as conn:
+        for row in rows_to_write:
+            site = publisher_from_url(conn, row["url"])
+            if db.upsert_article(
+                conn,
+                url=row["url"],
+                title=row["title"],
+                text=row["text"],
+                author=row["author"],
+                site=site,
+                hostname=row["hostname"],
+                published_at=row["published_at"],
+                source_ticker=row["source_ticker"],
+            ):
+                inserted += 1
+        conn.commit()
+
+    duplicates = len(rows_to_write) - inserted
+    if duplicates > 0:
+        log.info(
+            "Ingest complete — %d new article(s) inserted, %d duplicate(s) skipped",
+            inserted, duplicates,
+        )
+    else:
+        log.info("Ingest complete — %d new article(s) inserted", inserted)
     return inserted
 
+
+# ---------- CVM ingest (unchanged) ----------
 
 def _norm(s: str) -> str:
     return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower().strip()
@@ -248,7 +342,6 @@ def run_cvm_ingest(
     logconfig.silence_third_party()
     from finance_news.net.cvm import cvm_candidates_for_date
     from finance_news.net.fetch import fetch_cvm_article
-    from finance_news.store.publishers import publisher_from_url
 
     day = target_date or _today_sp()
     year = day.year
@@ -271,19 +364,19 @@ def run_cvm_ingest(
                 art = fetch_cvm_article(cand.url, title=cand.title)
             except Exception as e:
                 log.debug("CVM fetch failed %s: %s", cand.url, e)
-                time.sleep(INTER_ARTICLE_SLEEP)
+                time.sleep(INTER_FETCH_SLEEP_S)
                 if progress:
                     progress("cvm", i + 1, len(pairs))
                 continue
             if art is None:
-                time.sleep(INTER_ARTICLE_SLEEP)
+                time.sleep(INTER_FETCH_SLEEP_S)
                 if progress:
                     progress("cvm", i + 1, len(pairs))
                 continue
 
             pub = cand.published or art.published
             if pub is None:
-                time.sleep(INTER_ARTICLE_SLEEP)
+                time.sleep(INTER_FETCH_SLEEP_S)
                 if progress:
                     progress("cvm", i + 1, len(pairs))
                 continue
@@ -305,7 +398,7 @@ def run_cvm_ingest(
             ):
                 inserted += 1
 
-            time.sleep(INTER_ARTICLE_SLEEP)
+            time.sleep(INTER_FETCH_SLEEP_S)
             if progress:
                 progress("cvm", i + 1, len(pairs))
 

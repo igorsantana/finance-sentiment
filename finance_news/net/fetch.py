@@ -1,4 +1,11 @@
-"""Thin trafilatura wrapper that pulls text + metadata for a single URL."""
+"""Thin trafilatura wrapper that pulls text + metadata for a single URL.
+
+Inputs are direct publisher URLs — discovery happens in
+``finance_news.net.discovery`` (per-publisher listings, no third-party
+search index, no URL unwrapping). The legacy
+``resolve_google_news_batch`` shim was removed when the Google News /
+DDG ingest path was retired.
+"""
 from __future__ import annotations
 
 import json
@@ -11,11 +18,6 @@ import trafilatura
 from dateutil import parser as dateparser
 
 log = logging.getLogger(__name__)
-
-_GOOGLE_NEWS_PREFIX = "https://news.google.com/"
-# Flipped to True on the first run that gets zero successful decodes from
-# batchexecute (Google soft-block). Avoids firing 400+ useless POSTs per run.
-_gnews_decode_blocked: bool = False
 
 # Common Portuguese words absent from English — used to gate article language.
 _PT_TOKENS = frozenset([
@@ -31,46 +33,6 @@ def _is_portuguese(text: str) -> bool:
     words = text.lower().split()
     hits = sum(1 for w in words if w.strip(".,;:!?\"'()[]") in _PT_TOKENS)
     return hits >= _PT_MIN_HITS
-
-
-def resolve_google_news_batch(urls: list[str]) -> list[Optional[str]]:
-    """Decode Google News article URLs in one batchexecute POST (no per-article GET).
-
-    Uses decoderv4 which batches all IDs into a single request, avoiding the
-    per-article GET→POST sequence that triggers Google rate limiting.
-    Returns a parallel list of resolved URLs; None entries mean decode failed.
-
-    A module-level circuit breaker (_gnews_decode_blocked) is set after the
-    first all-empty response, preventing further batchexecute calls for the
-    rest of the process lifetime when Google is soft-blocking.
-    """
-    global _gnews_decode_blocked
-    if not urls:
-        return []
-    if _gnews_decode_blocked:
-        return [None] * len(urls)
-    try:
-        from googlenewsdecoder import decoderv4
-    except ImportError:
-        log.warning("googlenewsdecoder not installed")
-        return [None] * len(urls)
-    try:
-        results = decoderv4(urls)
-    except Exception as e:
-        log.warning("decoderv4 batch failed: %s", e)
-        return [None] * len(urls)
-    out: list[Optional[str]] = []
-    for r in results:
-        if isinstance(r, dict) and r.get("status") and r.get("url"):
-            out.append(r["url"])
-        else:
-            if isinstance(r, dict) and r.get("error"):
-                log.debug("decoderv4 error: %s", r["error"])
-            out.append(None)
-    if urls and not any(out):
-        log.warning("GNews batchexecute returned no URLs — soft-blocked; skipping decode for this run")
-        _gnews_decode_blocked = True
-    return out
 
 
 @dataclass
@@ -124,7 +86,12 @@ def _extract(html: str, url: str) -> Optional[Article]:
 
 
 def fetch_article_direct(url: str) -> Optional[Article]:
-    """Fetch an article from a direct publisher URL (already decoded from Google News)."""
+    """Fetch and extract an article from a direct publisher URL.
+
+    Returns ``None`` (and the caller drops the article) when trafilatura
+    can't pull HTML, the extracted body is shorter than 200 chars, or
+    the body fails the Portuguese language gate.
+    """
     downloaded = trafilatura.fetch_url(url)
     if not downloaded:
         log.debug("no html for %s", url)
@@ -169,19 +136,9 @@ def fetch_cvm_article(url: str, title: Optional[str] = None) -> Optional[Article
 
 
 def fetch_article(url: str) -> Optional[Article]:
-    """Fetch a single article, resolving Google News URLs if needed.
+    """Fetch a single article from a direct publisher URL.
 
-    Prefer calling resolve_google_news_batch() + fetch_article_direct() for
-    bulk ingestion — this one-at-a-time path exists for ad-hoc use only.
+    Equivalent to :func:`fetch_article_direct`; kept as the public name
+    for any external one-off caller that imports ``fetch_article``.
     """
-    if url.startswith(_GOOGLE_NEWS_PREFIX):
-        resolved = resolve_google_news_batch([url])[0]
-        if not resolved:
-            log.debug("could not unwrap google news url %s", url)
-            return None
-        url = resolved
-    downloaded = trafilatura.fetch_url(url)
-    if not downloaded:
-        log.debug("no html for %s", url)
-        return None
-    return _extract(downloaded, url)
+    return fetch_article_direct(url)

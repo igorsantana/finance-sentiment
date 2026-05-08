@@ -46,3 +46,10 @@ INSERT INTO publishers (hostname, display_name, founded_year, ownership, homepag
 INSERT INTO publishers (hostname, display_name, founded_year, ownership, homepage, affiliations) VALUES ('valorinveste.globo.com', 'Valor Investe', NULL, NULL, NULL, ARRAY[]::TEXT[]) ON CONFLICT (hostname) DO NOTHING;
 INSERT INTO publishers (hostname, display_name, founded_year, ownership, homepage, affiliations) VALUES ('veja.abril.com.br', 'Veja - Economia', 1968, 'Privada', 'https://veja.abril.com.br/economia', ARRAY['Grupo Abril', 'Editora Abril', 'Abril']::TEXT[]) ON CONFLICT (hostname) DO NOTHING;
 INSERT INTO publishers (hostname, display_name, founded_year, ownership, homepage, affiliations) VALUES ('www1.folha.uol.com.br', 'Folha de S.Paulo - Mercado', 1921, 'Privada', 'https://www1.folha.uol.com.br/mercado', ARRAY['Grupo Folha', 'UOL', 'Folha de S.Paulo', 'Folhapress']::TEXT[]) ON CONFLICT (hostname) DO NOTHING;
+
+-- Tier 1 + Tier 2 discovery expansion. Idempotent — older databases
+-- that already have these rows will hit the ON CONFLICT and skip cleanly.
+INSERT INTO publishers (hostname, display_name, founded_year, ownership, homepage, affiliations) VALUES ('bloomberglinea.com.br', 'Bloomberg Línea Brasil', 2021, 'Privada', 'https://www.bloomberglinea.com.br', ARRAY['Bloomberg', 'Falic Group']::TEXT[]) ON CONFLICT (hostname) DO NOTHING;
+INSERT INTO publishers (hostname, display_name, founded_year, ownership, homepage, affiliations) VALUES ('bmcnews.com.br', 'BM&C News', 2014, 'Privada', 'https://bmcnews.com.br', ARRAY[]::TEXT[]) ON CONFLICT (hostname) DO NOTHING;
+INSERT INTO publishers (hostname, display_name, founded_year, ownership, homepage, affiliations) VALUES ('capitalaberto.com.br', 'Capital Aberto', 2003, 'Privada', 'https://capitalaberto.com.br', ARRAY[]::TEXT[]) ON CONFLICT (hostname) DO NOTHING;
+INSERT INTO publishers (hostname, display_name, founded_year, ownership, homepage, affiliations) VALUES ('trademap.com.br', 'TradeMap', 2019, 'Privada', 'https://trademap.com.br', ARRAY[]::TEXT[]) ON CONFLICT (hostname) DO NOTHING;
