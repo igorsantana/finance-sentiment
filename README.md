@@ -1,11 +1,15 @@
 # Brazilian Finance News
 
-A daily NLP pipeline over Portuguese-language financial news. For every B3
-company tracked by BrAPI it queries Google News, fetches the articles, runs
-NER + sentiment + ticker matching, summarizes the day's coverage per company
-via an LLM, and stores everything in Postgres. A FastAPI + React/Vite web
-app surfaces the results; a terminal TUI is bundled for human-judging
-articles against the model's sentiment label.
+A daily NLP pipeline over Portuguese-language financial news. For every
+B3 company tracked by BrAPI it lists today's articles across a curated
+set of pt-BR finance publishers (InfoMoney, Money Times, Suno, Brazil
+Journal, Seu Dinheiro, Neofeed, Exame, Estadão E-Investidor, CNN
+Brasil, Forbes, BM&C News, IstoÉ Dinheiro, Capital Aberto, InvestNews,
+Bloomberg Línea, Capital Reset, TradeMap, Valor, Folha), runs NER +
+sentiment + ticker matching on each article body, summarizes the day's
+coverage per company via an LLM, and stores everything in Postgres. A
+FastAPI + React/Vite web app surfaces the results; a terminal TUI is
+bundled for human-judging articles against the model's sentiment label.
 
 ## Architecture
 
@@ -85,7 +89,7 @@ GIN index on `matched_tickers` makes ticker-filtered queries fast.
 finance_news/
   api.py             FastAPI: reports, companies, stocks, runs, SSE streams
   pipeline.py        run_ingest / run_extract / run_summarize / run_full
-  ingest.py          Google News → articles table (one query per company)
+  ingest.py          per-publisher discovery + matcher fold → articles table
   extract.py         NER + subjects + sentiment + matcher → update articles
   summaries.py       LLM-backed per-company day summaries (eager, top-N)
   stocks.py          yfinance OHLC window with DB-backed caching
@@ -100,8 +104,9 @@ finance_news/
     db.py            psycopg3 access layer (only place SQL lives)
     publishers.py    db.lookup_publisher + progressive-suffix fallback
   net/
-    discovery.py     google_news_feed + filter_today + Candidate
-    fetch.py         article body fetcher (trafilatura)
+    discovery.py     Per-publisher discovery — WordPress / RSS / HTML adapters
+    fetch.py         Article body fetcher (trafilatura)
+    cvm.py           CVM Dados Abertos IPE filings → Candidate list
 web/                 Vite + React frontend (charts, candle, summaries)
 migrations/          SQL files, applied in lexical order
 scripts/
@@ -112,8 +117,11 @@ scripts/
   judging/
     cli.py           interactive TUI
     stats.py         confusion matrix + bad_match top-N
+  backfill/
+    rematch_companies.py   re-run CompanyMatcher over existing rows
+    filter_sports_matches.py  drop sports-context false positives
   diagnostics/
-    probe_rss.py     verify Google News coverage
+    probe_rss.py     health-check every discovery adapter for today
     audit_matches.py flag likely false positives in matched_tickers
 ```
 

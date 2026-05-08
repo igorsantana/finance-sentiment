@@ -18,15 +18,29 @@ import csv
 import io
 import logging
 import zipfile
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Optional
 from urllib.parse import urlparse
 
 import requests
 
-from finance_news.net.discovery import Candidate
-
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class Candidate:
+    """Lightweight (url, title, published) tuple for CVM filings.
+
+    Lives here — instead of in ``finance_news.net.discovery`` — because
+    CVM is the only consumer. ``finance_news.net.discovery`` covers
+    publisher listings and emits its own ``DiscoveredArticle`` shape;
+    keeping the CVM tuple local avoids the two unrelated discovery
+    surfaces sharing types.
+    """
+    url: str
+    title: Optional[str]
+    published: Optional[datetime]
 
 CVM_ZIP_URL = (
     "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/IPE/DADOS/"
