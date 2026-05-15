@@ -927,6 +927,43 @@ def get_sentiment_series(ticker_root: str, series_date: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/companies/{ticker_root}/social-sentiment/{series_date}")
+def get_social_sentiment_series(ticker_root: str, series_date: str) -> dict[str, Any]:
+    """Per-day X/social post sentiment counts for a ticker (±10 calendar days)."""
+    try:
+        day = date.fromisoformat(series_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid date")
+    root = ticker_root.upper()
+    start = day - timedelta(days=10)
+    end = day + timedelta(days=10)
+    with db.connect() as conn:
+        rows = db.fetch_social_sentiment_series(
+            conn, ticker_root=root, start=start, end=end,
+        )
+    points: list[dict[str, Any]] = []
+    for r in rows:
+        pos = int(r["positive"])
+        neg = int(r["negative"])
+        neu = int(r["neutral"])
+        total = int(r["total"])
+        net = (pos - neg) / total if total else 0.0
+        points.append({
+            "date": r["day"].isoformat(),
+            "positive": pos,
+            "neutral": neu,
+            "negative": neg,
+            "total": total,
+            "net": net,
+        })
+    return {
+        "ticker": root,
+        "selectedDate": day.isoformat(),
+        "platform": "x",
+        "points": points,
+    }
+
+
 def _pearson(xs: list[float], ys: list[float]) -> float | None:
     n = len(xs)
     if n < 2:

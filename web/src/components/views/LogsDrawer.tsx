@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
-import { ScrollArea } from "../ui/scroll-area";
+import { ScrollArea } from "@cyberdeck/ui";
 import type { LogLine } from "../../hooks/useRunStream";
 
 const LEVEL_ICON: Record<string, string> = {

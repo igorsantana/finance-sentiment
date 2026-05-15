@@ -1,4 +1,4 @@
-.PHONY: help build up down nuke logs ps migrate psql db-reset companies ingest extract full judge judge-stats shell status dev probe
+.PHONY: help build up down nuke logs ps migrate psql db-reset companies ingest extract full judge judge-stats shell status dev probe backfill
 
 COMPOSE  := docker compose
 EXEC     := $(COMPOSE) exec -T app
@@ -75,3 +75,9 @@ dev: ## Live-reload backend (uvicorn --reload) + frontend (vite). Ctrl-C stops b
 
 probe: ## Health-check every discovery adapter for today (SP)
 	$(EXEC) python scripts/diagnostics/probe_rss.py
+
+backfill: ## Backfill one SP day via GDELT + CC-NEWS (DATE=YYYY-MM-DD required)
+ifndef DATE
+	$(error DATE is required, e.g. make backfill DATE=2026-05-10)
+endif
+	$(EXEC) python scripts/backfill/ccnews_ingest.py --date $(DATE) --source both

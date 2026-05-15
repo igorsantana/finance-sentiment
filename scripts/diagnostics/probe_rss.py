@@ -70,10 +70,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
 
     total = len(results)
+    listed_raw = sum(len(r.articles) for r in results)
+    deduped, _ = discovery.discover_articles(day, adapters=adapters)
     print(
         f"\nCoverage: {pass_n}/{total} pass · {warn_n} warn (0 articles) · "
         f"{fail_n} fail"
     )
+    print(f"Listed URLs: {listed_raw} raw · {len(deduped)} unique after dedup")
     return 0 if fail_n == 0 else 1
 
 

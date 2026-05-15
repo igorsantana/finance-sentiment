@@ -5,7 +5,8 @@ B3 company tracked by BrAPI it lists today's articles across a curated
 set of pt-BR finance publishers (InfoMoney, Money Times, Suno, Brazil
 Journal, Seu Dinheiro, Neofeed, Exame, Estadão E-Investidor, CNN
 Brasil, Forbes, BM&C News, IstoÉ Dinheiro, Capital Aberto, InvestNews,
-Bloomberg Línea, Capital Reset, TradeMap, Valor, Folha), runs NER +
+Bloomberg Línea, Empiricus, Levante, Petronotícias, Megawhat, Capital
+Reset, TradeMap, Valor, Folha), runs NER +
 sentiment + ticker matching on each article body, summarizes the day's
 coverage per company via an LLM, and stores everything in Postgres. A
 FastAPI + React/Vite web app surfaces the results; a terminal TUI is
@@ -61,6 +62,7 @@ make psql          # psql shell on the local DB
 make judge         # interactive TUI; q to quit
 make judge-stats   # confusion matrix, bad_match top-N, agreement by sector
 make shell         # bash inside the app container
+make backfill DATE=2026-05-10   # GDELT + CC-NEWS backfill for one SP day
 make ps / make logs / make down / make nuke
 ```
 
@@ -89,7 +91,7 @@ GIN index on `matched_tickers` makes ticker-filtered queries fast.
 finance_news/
   api.py             FastAPI: reports, companies, stocks, runs, SSE streams
   pipeline.py        run_ingest / run_extract / run_summarize / run_full
-  ingest.py          per-publisher discovery + matcher fold → articles table
+  ingest.py          publisher discovery + GDELT fallback + matcher → articles
   extract.py         NER + subjects + sentiment + matcher → update articles
   summaries.py       LLM-backed per-company day summaries (eager, top-N)
   stocks.py          yfinance OHLC window with DB-backed caching
@@ -104,7 +106,8 @@ finance_news/
     db.py            psycopg3 access layer (only place SQL lives)
     publishers.py    db.lookup_publisher + progressive-suffix fallback
   net/
-    discovery.py     Per-publisher discovery — WordPress / RSS / HTML adapters
+    discovery.py     Per-publisher discovery — sitemaps / WordPress / RSS / HTML
+    gdelt.py         GDELT DOC API fallback for companies with zero listing hits
     fetch.py         Article body fetcher (trafilatura)
     cvm.py           CVM Dados Abertos IPE filings → Candidate list
 web/                 Vite + React frontend (charts, candle, summaries)
@@ -118,6 +121,7 @@ scripts/
     cli.py           interactive TUI
     stats.py         confusion matrix + bad_match top-N
   backfill/
+    ccnews_ingest.py       GDELT bulk + CC-NEWS WARC backfill for one SP day
     rematch_companies.py   re-run CompanyMatcher over existing rows
     filter_sports_matches.py  drop sports-context false positives
   diagnostics/

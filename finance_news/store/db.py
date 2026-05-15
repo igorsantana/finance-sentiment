@@ -10,6 +10,7 @@ the newly assigned id.
 """
 from __future__ import annotations
 
+import json
 import os
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -78,6 +79,12 @@ def upsert_company(
 
 
 # ---------- publishers ----------
+
+def fetch_publisher_hostnames(conn: psycopg.Connection) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT hostname FROM publishers")
+        return [r["hostname"] for r in cur.fetchall() if r.get("hostname")]
+
 
 def lookup_publisher(
     conn: psycopg.Connection, hostname: str
@@ -630,6 +637,105 @@ def iter_unjudged(
         cur.execute(sql, params)
         for row in cur:
             yield row
+
+
+# ---------- social_posts ----------
+
+def upsert_social_post(
+    conn: psycopg.Connection,
+    *,
+    platform: str,
+    external_id: str,
+    url: Optional[str],
+    author_handle: Optional[str],
+    text: str,
+    posted_at: Optional[datetime],
+    raw_payload: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Insert a social post. Returns True if newly inserted."""
+    payload = json.dumps(raw_payload) if raw_payload is not None else None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO social_posts
+                (platform, external_id, url, author_handle, text,
+                 posted_at, raw_payload, fetched_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, now())
+            ON CONFLICT (platform, external_id) DO NOTHING
+            """,
+            (platform, external_id, url, author_handle, text, posted_at, payload),
+        )
+        return cur.rowcount == 1
+
+
+def iter_unextracted_social(
+    conn: psycopg.Connection,
+    *,
+    for_date: Optional[date] = None,
+) -> list[dict[str, Any]]:
+    sql = (
+        "SELECT id, platform, external_id, url, author_handle, text, posted_at "
+        "FROM social_posts WHERE sentiment IS NULL"
+    )
+    params: list[Any] = []
+    if for_date is not None:
+        sql += " AND (posted_at AT TIME ZONE 'America/Sao_Paulo')::date = %s"
+        params.append(for_date)
+    sql += " ORDER BY posted_at DESC NULLS LAST"
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return list(cur.fetchall())
+
+
+def update_social_extraction(
+    conn: psycopg.Connection,
+    *,
+    post_id: int,
+    matched_tickers: list[str],
+    sentiment: str,
+    sentiment_score: Optional[float],
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE social_posts SET
+                matched_tickers = %s,
+                sentiment       = %s,
+                sentiment_score = %s,
+                extracted_at    = now()
+            WHERE id = %s
+            """,
+            (matched_tickers, sentiment, sentiment_score, post_id),
+        )
+
+
+def fetch_social_sentiment_series(
+    conn: psycopg.Connection,
+    *,
+    ticker_root: str,
+    start: date,
+    end: date,
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                (posted_at AT TIME ZONE 'America/Sao_Paulo')::date AS day,
+                COUNT(*) FILTER (WHERE sentiment = 'positive') AS positive,
+                COUNT(*) FILTER (WHERE sentiment = 'negative') AS negative,
+                COUNT(*) FILTER (WHERE sentiment = 'neutral') AS neutral,
+                COUNT(*) AS total
+            FROM social_posts
+            WHERE %s = ANY(matched_tickers)
+              AND posted_at IS NOT NULL
+              AND (posted_at AT TIME ZONE 'America/Sao_Paulo')::date
+                    BETWEEN %s AND %s
+            GROUP BY 1
+            ORDER BY 1
+            """,
+            (ticker_root, start, end),
+        )
+        return list(cur.fetchall())
 
 
 # ---------- runs ----------

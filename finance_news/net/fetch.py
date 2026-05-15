@@ -19,6 +19,10 @@ from dateutil import parser as dateparser
 
 log = logging.getLogger(__name__)
 
+GNEWS_PREFIX = "https://news.google.com/"
+
+_gnews_decode_blocked = False
+
 # Common Portuguese words absent from English — used to gate article language.
 _PT_TOKENS = frozenset([
     "não", "para", "com", "por", "das", "dos", "uma", "uns",
@@ -85,6 +89,75 @@ def _extract(html: str, url: str) -> Optional[Article]:
     )
 
 
+def resolve_url_via_redirect(url: str, timeout: int = 15) -> Optional[str]:
+    """Follow redirects for a Google News wrapper URL."""
+    if not url.startswith(GNEWS_PREFIX):
+        return url
+    try:
+        import requests as _req
+        r = _req.get(
+            url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout,
+            allow_redirects=True,
+        )
+        final = (r.url or "").strip()
+        if final and not final.startswith(GNEWS_PREFIX):
+            return final
+    except Exception as e:
+        log.debug("redirect resolve failed %s: %s", url, e)
+    return None
+
+
+def resolve_google_news_batch(urls: list[str]) -> list[Optional[str]]:
+    """Decode Google News article URLs (batchexecute batch, optional)."""
+    global _gnews_decode_blocked
+    if not urls:
+        return []
+    if _gnews_decode_blocked:
+        return [None] * len(urls)
+    try:
+        from googlenewsdecoder import decoderv4
+    except ImportError:
+        return [None] * len(urls)
+    try:
+        results = decoderv4(urls)
+    except Exception as e:
+        log.warning("decoderv4 batch failed: %s", e)
+        return [None] * len(urls)
+    out: list[Optional[str]] = []
+    for r in results:
+        if isinstance(r, dict) and r.get("status") and r.get("url"):
+            out.append(r["url"])
+        else:
+            out.append(None)
+    if urls and not any(out):
+        log.warning(
+            "GNews batchexecute returned no URLs — skipping decode for this run",
+        )
+        _gnews_decode_blocked = True
+    return out
+
+
+def resolve_google_news_urls(urls: list[str]) -> dict[str, str]:
+    """Map google news wrapper URL → publisher URL."""
+    unique = list(dict.fromkeys(u for u in urls if u.startswith(GNEWS_PREFIX)))
+    if not unique:
+        return {}
+    resolved: dict[str, str] = {}
+    still: list[str] = []
+    for u in unique:
+        real = resolve_url_via_redirect(u)
+        if real:
+            resolved[u] = real
+        else:
+            still.append(u)
+    if still:
+        decoded = resolve_google_news_batch(still)
+        for orig, real in zip(still, decoded):
+            if real:
+                resolved[orig] = real
+    return resolved
+
+
 def fetch_article_direct(url: str) -> Optional[Article]:
     """Fetch and extract an article from a direct publisher URL.
 
@@ -92,6 +165,11 @@ def fetch_article_direct(url: str) -> Optional[Article]:
     can't pull HTML, the extracted body is shorter than 200 chars, or
     the body fails the Portuguese language gate.
     """
+    if url.startswith(GNEWS_PREFIX):
+        real = resolve_google_news_urls([url]).get(url)
+        if not real:
+            return None
+        url = real
     downloaded = trafilatura.fetch_url(url)
     if not downloaded:
         log.debug("no html for %s", url)

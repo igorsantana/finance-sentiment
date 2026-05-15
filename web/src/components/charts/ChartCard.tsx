@@ -1,5 +1,5 @@
 import * as React from "react";
-import { cn } from "../../lib/utils";
+import { Pane, cn } from "@cyberdeck/ui";
 
 export type ChartCardProps = {
   title: string;
@@ -17,19 +17,23 @@ export function ChartCard({
   children,
 }: ChartCardProps) {
   return (
-    <div className={cn("", className)}>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-mono uppercase tracking-widest text-foreground/70">
-          {title}
-        </span>
-        {subtitle ? (
-          <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/60">
-            {subtitle}
+    <Pane
+      className={cn("border-0 bg-transparent shadow-none", className)}
+      contentClassName={cn("border-t border-border/40 pt-4", contentClassName)}
+      header={
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-mono uppercase tracking-widest text-foreground/70">
+            {title}
           </span>
-        ) : null}
-      </div>
-      <div className="border-b border-border/40 mb-4" />
-      <div className={cn("", contentClassName)}>{children}</div>
-    </div>
+          {subtitle ? (
+            <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/60">
+              {subtitle}
+            </span>
+          ) : null}
+        </div>
+      }
+    >
+      {children}
+    </Pane>
   );
 }

@@ -115,7 +115,7 @@ export function Combobox({
       </button>
 
       {open && (
-        <div className="absolute z-20 mt-1 w-full rounded-md border border-border bg-background shadow-lg neon-edge">
+        <div className="absolute z-20 mt-1 w-full rounded-md border border-border bg-background shadow-none neon-edge">
           <input
             autoFocus
             value={query}

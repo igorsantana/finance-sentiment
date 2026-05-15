@@ -67,7 +67,7 @@ export function AnalysisView() {
     : "—";
 
   return (
-    <div className="space-y-6">
+    <div className="animate-fade-in space-y-6">
       <div className="flex items-end justify-between flex-wrap gap-4">
         <div>
           <h2 className="font-mono uppercase tracking-[0.25em] text-xs text-muted-foreground mb-1">

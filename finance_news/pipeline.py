@@ -156,6 +156,16 @@ def run_full(
         children.append(run_ingest(target_date=day, progress=progress, setup_logging=False))
         children.append(run_extract(target_date=day, progress=progress, setup_logging=False))
         children.append(run_summarize(target_date=day, progress=progress, setup_logging=False))
+        import os
+        if os.environ.get("X_SOCIAL_INGEST", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            children.append(
+                run_social_ingest(target_date=day, progress=progress, setup_logging=False),
+            )
+            children.append(
+                run_social_extract(target_date=day, progress=progress, setup_logging=False),
+            )
     except Exception as e:
         _finish(run_id, status="error", error=repr(e))
         raise
@@ -166,6 +176,52 @@ def run_full(
         kind="full", run_id=run_id, started_at=started,
         finished_at=datetime.now(timezone.utc), status="ok",
         n_fetched=n_fetched, n_extracted=n_extracted, children=children,
+    )
+
+
+def run_social_ingest(
+    target_date: Optional[date] = None,
+    progress: Optional[ProgressFn] = None,
+    setup_logging: bool = True,
+) -> RunSummary:
+    if setup_logging:
+        _setup_logging()
+    run_id, started = _start("social_ingest")
+    try:
+        from finance_news import social_ingest
+        n = social_ingest.run_social_ingest(
+            target_date=target_date, progress=progress,
+        )
+    except Exception as e:
+        _finish(run_id, status="error", error=repr(e))
+        raise
+    _finish(run_id, status="ok", n_fetched=n)
+    return RunSummary(
+        kind="social_ingest", run_id=run_id, started_at=started,
+        finished_at=datetime.now(timezone.utc), status="ok", n_fetched=n,
+    )
+
+
+def run_social_extract(
+    target_date: Optional[date] = None,
+    progress: Optional[ProgressFn] = None,
+    setup_logging: bool = True,
+) -> RunSummary:
+    if setup_logging:
+        _setup_logging()
+    run_id, started = _start("social_extract")
+    try:
+        from finance_news import social_extract
+        n = social_extract.run_social_extract(
+            target_date=target_date, progress=progress,
+        )
+    except Exception as e:
+        _finish(run_id, status="error", error=repr(e))
+        raise
+    _finish(run_id, status="ok", n_extracted=n)
+    return RunSummary(
+        kind="social_extract", run_id=run_id, started_at=started,
+        finished_at=datetime.now(timezone.utc), status="ok", n_extracted=n,
     )
 
 
@@ -220,7 +276,13 @@ def pipeline_status() -> dict[str, Any]:
 
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="python -m finance_news.pipeline")
-    p.add_argument("subcommand", choices=("ingest", "extract", "summarize", "run", "cvm", "status"))
+    p.add_argument(
+        "subcommand",
+        choices=(
+            "ingest", "extract", "summarize", "run", "cvm",
+            "social", "social-extract", "status",
+        ),
+    )
     p.add_argument("--date", help="ISO date (YYYY-MM-DD); default = today in BRT.")
     args = p.parse_args(argv)
     target_date = date.fromisoformat(args.date) if args.date else None
@@ -235,6 +297,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         run_full(target_date=target_date)
     elif args.subcommand == "cvm":
         run_cvm_ingest(target_date=target_date)
+    elif args.subcommand == "social":
+        run_social_ingest(target_date=target_date)
+    elif args.subcommand == "social-extract":
+        run_social_extract(target_date=target_date)
     elif args.subcommand == "status":
         import json
         print(json.dumps(pipeline_status(), default=str, indent=2))
