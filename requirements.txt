@@ -18,3 +18,6 @@ uvicorn[standard]>=0.30
 openai>=1.40
 yfinance>=0.2.43
 pgvector>=0.3
+warcio>=1.7
+ddgs>=9.0
+googlenewsdecoder>=0.1.7

@@ -150,7 +150,7 @@ export default function App() {
               quantities={quantities}
             />
           ) : (
-            <div className="h-full overflow-auto px-8 py-8">
+            <div key={section} className="animate-fade-in h-full overflow-auto px-8 py-8">
               {section === "admin" ? (
                 <AdminView
                   portfolioTickers={portfolioTickers}

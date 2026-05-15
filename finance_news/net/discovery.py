@@ -33,6 +33,8 @@ Three adapter types cover every publisher in ``default_adapters()``:
 * ``RssListAdapter``    — one or more RSS/Atom feeds with explicit UA +
   ``Accept-Language`` so anti-bot interstitials don't masquerade as empty
   feeds (used for InvestNews and Bloomberg Línea).
+* ``NewsSitemapAdapter`` — Google News sitemap XML (up to ~1000 URLs / 48h);
+  primary listing for publishers that expose ``news-sitemap.xml``.
 * ``ValorGloboAdapter`` / ``FolhaSearchAdapter`` — site-specific HTML
   scrapers; the legacy Globo/Folha RSS endpoints have been gone for years.
 
@@ -49,8 +51,10 @@ from __future__ import annotations
 
 import html
 import logging
+import os
 import re
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -217,7 +221,7 @@ class WordPressAdapter:
         t0 = time.perf_counter()
         start = datetime.combine(day, datetime.min.time(), tzinfo=SP_TZ)
         end = start + timedelta(days=1)
-        params: dict[str, str | int] = {
+        base_params: dict[str, str | int] = {
             "after": start.isoformat(),
             "before": end.isoformat(),
             "per_page": self.per_page,
@@ -228,48 +232,68 @@ class WordPressAdapter:
         if self.category_slugs:
             cat_ids = self._resolve_categories(result)
             if cat_ids:
-                params["categories"] = ",".join(str(i) for i in cat_ids)
+                base_params["categories"] = ",".join(str(i) for i in cat_ids)
+
+        page = 1
+        stop = False
         try:
-            r = requests.get(
-                self._endpoint(), params=params,
-                headers=HEADERS, timeout=HTTP_TIMEOUT_S,
-            )
-            result.http_calls += 1
-            if r.status_code != 200:
-                result.error = f"HTTP {r.status_code}"
-                return result
-            payload = r.json()
-            if not isinstance(payload, list):
-                result.error = f"unexpected payload type: {type(payload).__name__}"
-                return result
+            while not stop:
+                params = {**base_params, "page": page}
+                r = requests.get(
+                    self._endpoint(), params=params,
+                    headers=HEADERS, timeout=HTTP_TIMEOUT_S,
+                )
+                result.http_calls += 1
+                if r.status_code != 200:
+                    if page == 1:
+                        result.error = f"HTTP {r.status_code}"
+                    break
+                payload = r.json()
+                if not isinstance(payload, list):
+                    if page == 1:
+                        result.error = (
+                            f"unexpected payload type: {type(payload).__name__}"
+                        )
+                    break
+                if not payload:
+                    break
+                oldest_on_page: Optional[datetime] = None
+                for post in payload:
+                    link = post.get("link")
+                    if not link:
+                        continue
+                    title = _strip_html((post.get("title") or {}).get("rendered"))
+                    excerpt = _strip_html((post.get("excerpt") or {}).get("rendered"))
+                    pub_gmt = post.get("date_gmt")
+                    pub_local = post.get("date")
+                    if pub_gmt:
+                        raw = pub_gmt if pub_gmt.endswith("Z") else pub_gmt + "Z"
+                        pub = _parse_dt(raw, assume_tz=ZoneInfo("UTC"))
+                    elif pub_local:
+                        pub = _parse_dt(pub_local, assume_tz=SP_TZ)
+                    else:
+                        pub = None
+                    if pub is not None:
+                        if oldest_on_page is None or pub < oldest_on_page:
+                            oldest_on_page = pub
+                    if pub is None or not _in_sp_day(pub, day):
+                        continue
+                    result.articles.append(DiscoveredArticle(
+                        url=link, title=title, excerpt=excerpt,
+                        publisher=self.name, publisher_host=self.hostname,
+                        published_at=pub,
+                    ))
+                if len(payload) < self.per_page:
+                    break
+                if oldest_on_page is not None and oldest_on_page.astimezone(SP_TZ).date() < day:
+                    break
+                page += 1
+                if page > 10:
+                    break
         except Exception as e:
             result.error = repr(e)
-            return result
         finally:
             result.elapsed_s = time.perf_counter() - t0
-
-        for post in payload:
-            link = post.get("link")
-            if not link:
-                continue
-            title = _strip_html((post.get("title") or {}).get("rendered"))
-            excerpt = _strip_html((post.get("excerpt") or {}).get("rendered"))
-            pub_gmt = post.get("date_gmt")
-            pub_local = post.get("date")
-            if pub_gmt:
-                raw = pub_gmt if pub_gmt.endswith("Z") else pub_gmt + "Z"
-                pub = _parse_dt(raw, assume_tz=ZoneInfo("UTC"))
-            elif pub_local:
-                pub = _parse_dt(pub_local, assume_tz=SP_TZ)
-            else:
-                pub = None
-            if pub is None or not _in_sp_day(pub, day):
-                continue
-            result.articles.append(DiscoveredArticle(
-                url=link, title=title, excerpt=excerpt,
-                publisher=self.name, publisher_host=self.hostname,
-                published_at=pub,
-            ))
         return result
 
 
@@ -351,6 +375,74 @@ class RssListAdapter:
         result.elapsed_s = time.perf_counter() - t0
         if not result.articles and feed_errors and len(feed_errors) == len(self.feed_urls):
             result.error = feed_errors[0]
+        return result
+
+
+# ---------- Google News sitemap adapter ----------
+
+_SITEMAP_NS = {
+    "sm": "http://www.sitemaps.org/schemas/sitemap/0.9",
+    "news": "http://www.google.com/schemas/sitemap-news/0.9",
+}
+
+
+@dataclass
+class NewsSitemapAdapter:
+    """Parse a publisher's Google News sitemap (``news-sitemap.xml``).
+
+    Sitemaps list up to 1000 article URLs from roughly the last 48 hours
+    with ``news:publication_date`` and ``news:title``. One GET replaces
+    paginated WordPress REST calls and typically surfaces more URLs per
+    publisher than ``per_page=100`` on ``/wp-json/wp/v2/posts``.
+    """
+    name: str
+    hostname: str
+    sitemap_url: str
+
+    def list_today(self, day: date) -> AdapterResult:
+        result = AdapterResult(publisher=self.name, hostname=self.hostname)
+        t0 = time.perf_counter()
+        try:
+            r = requests.get(
+                self.sitemap_url, headers=HEADERS,
+                timeout=HTTP_TIMEOUT_S, allow_redirects=True,
+            )
+            result.http_calls += 1
+            if r.status_code != 200:
+                result.error = f"HTTP {r.status_code}"
+                return result
+            root = ET.fromstring(r.content)
+        except ET.ParseError as e:
+            result.error = f"XML parse: {e}"
+            return result
+        except Exception as e:
+            result.error = repr(e)
+            return result
+        finally:
+            result.elapsed_s = time.perf_counter() - t0
+
+        for url_el in root.findall("sm:url", _SITEMAP_NS):
+            loc_el = url_el.find("sm:loc", _SITEMAP_NS)
+            if loc_el is None or not loc_el.text:
+                continue
+            link = loc_el.text.strip()
+            news_el = url_el.find("news:news", _SITEMAP_NS)
+            pub: Optional[datetime] = None
+            title = ""
+            if news_el is not None:
+                pub_el = news_el.find("news:publication_date", _SITEMAP_NS)
+                if pub_el is not None and pub_el.text:
+                    pub = _parse_dt(pub_el.text.strip(), assume_tz=ZoneInfo("UTC"))
+                title_el = news_el.find("news:title", _SITEMAP_NS)
+                if title_el is not None and title_el.text:
+                    title = _strip_html(title_el.text)
+            if pub is None or not _in_sp_day(pub, day):
+                continue
+            result.articles.append(DiscoveredArticle(
+                url=link, title=title, excerpt="",
+                publisher=self.name, publisher_host=self.hostname,
+                published_at=pub,
+            ))
         return result
 
 
@@ -466,7 +558,24 @@ class FolhaSearchAdapter:
 
 # ---------- adapter set ----------
 
-def default_adapters() -> list[Adapter]:
+def _env_enabled(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def publisher_host_allowlist() -> set[str]:
+    """Hosts from built-in adapters (used for social link filtering)."""
+    hosts: set[str] = set()
+    for a in publisher_adapters():
+        h = getattr(a, "hostname", None)
+        if h:
+            hosts.add(h.lower().removeprefix("www."))
+    return hosts
+
+
+def publisher_adapters() -> list[Adapter]:
     """The full pt-BR finance discovery surface used by the production
     ingest.
 
@@ -476,26 +585,56 @@ def default_adapters() -> list[Adapter]:
     finance-relevance order so logs read naturally.
     """
     return [
+        # --- Tier 1: news sitemaps (higher URL volume than WP REST alone) --
+        NewsSitemapAdapter(
+            "InfoMoney", "infomoney.com.br",
+            "https://www.infomoney.com.br/news-sitemap.xml",
+        ),
+        NewsSitemapAdapter(
+            "Brazil Journal", "braziljournal.com",
+            "https://braziljournal.com/sitemap-news.xml",
+        ),
+        NewsSitemapAdapter(
+            "E-Investidor", "einvestidor.estadao.com.br",
+            "https://einvestidor.estadao.com.br/sitemap-news.xml",
+        ),
+        NewsSitemapAdapter(
+            "CNN Brasil - Economia", "cnnbrasil.com.br",
+            "https://admin.cnnbrasil.com.br/sitemap-news.xml",
+        ),
+        NewsSitemapAdapter(
+            "G1 Economia", "g1.globo.com",
+            "https://g1.globo.com/sitemap-news.xml",
+        ),
+        NewsSitemapAdapter(
+            "UOL Economia", "economia.uol.com.br",
+            "https://economia.uol.com.br/sitemap-news.xml",
+        ),
+        NewsSitemapAdapter(
+            "Estadão Economia", "economia.estadao.com.br",
+            "https://economia.estadao.com.br/sitemap-news.xml",
+        ),
+        NewsSitemapAdapter(
+            "R7 Economia", "r7.com",
+            "https://r7.com/sitemap-news.xml",
+        ),
         # --- Tier 1 finance-focused, WordPress REST ----------------------
-        WordPressAdapter("InfoMoney",          "infomoney.com.br"),
         WordPressAdapter("Money Times",        "moneytimes.com.br"),
         WordPressAdapter("Suno Notícias",      "suno.com.br"),
-        WordPressAdapter("Brazil Journal",     "braziljournal.com"),
         WordPressAdapter("Seu Dinheiro",       "seudinheiro.com"),
         WordPressAdapter("Neofeed",            "neofeed.com.br"),
-        WordPressAdapter("E-Investidor",       "einvestidor.estadao.com.br"),
         WordPressAdapter("BM&C News",          "bmcnews.com.br"),
         WordPressAdapter("IstoÉ Dinheiro",     "istoedinheiro.com.br"),
         WordPressAdapter("Capital Aberto",     "capitalaberto.com.br"),
+        WordPressAdapter("Empiricus",          "empiricus.com.br"),
+        WordPressAdapter("Levante Investimentos", "levanteideias.com.br"),
+        WordPressAdapter("Petronotícias",       "petronoticias.com.br"),
+        WordPressAdapter("Megawhat",           "megawhat.com.br"),
         # --- Tier 1 mixed-content, finance categories only --------------
         WordPressAdapter(
             "Exame", "exame.com",
             category_slugs=["mercados", "invest", "economia",
                             "negocios", "financas-pessoais"],
-        ),
-        WordPressAdapter(
-            "CNN Brasil - Economia", "cnnbrasil.com.br",
-            category_slugs=["economia", "economia-business"],
         ),
         WordPressAdapter(
             "Forbes Brasil", "forbes.com.br",
@@ -512,12 +651,57 @@ def default_adapters() -> list[Adapter]:
                 "https://www.bloomberglinea.com.br/arc/outboundfeeds/rss/?outputType=xml",
             ],
         ),
+        RssListAdapter(
+            "Investing.com Brasil", "br.investing.com",
+            feed_urls=["https://br.investing.com/rss/news.rss"],
+        ),
+        RssListAdapter(
+            "Yahoo Finanças", "br.financas.yahoo.com",
+            feed_urls=[
+                "https://br.financas.yahoo.com/rss/topstories",
+            ],
+        ),
+        RssListAdapter(
+            "B3 Comunicados", "b3.com.br",
+            feed_urls=["https://www.b3.com.br/pt_br/rss/noticias/"],
+        ),
         WordPressAdapter("Capital Reset",      "capitalreset.com"),
         WordPressAdapter("TradeMap",           "trademap.com.br"),
         # --- Site-specific scrapers --------------------------------------
         ValorGloboAdapter(),
         FolhaSearchAdapter(),
     ]
+
+
+def default_adapters() -> list[Adapter]:
+    """Full discovery surface: publishers + optional search/social adapters."""
+    adapters: list[Adapter] = list(publisher_adapters())
+    allowed = publisher_host_allowlist()
+    try:
+        from finance_news.store import db
+        with db.connect() as conn:
+            for row in db.fetch_publisher_hostnames(conn):
+                allowed.add(row.lower().removeprefix("www."))
+    except Exception as e:
+        log.debug("Could not load publisher hostnames from DB: %s", e)
+
+    if _env_enabled("GNEWS_DISCOVERY", default=True):
+        from finance_news.net.search_feeds import google_news_adapters
+        adapters.extend(google_news_adapters())
+
+    if _env_enabled("DDG_DISCOVERY", default=True):
+        from finance_news.net.search_feeds import duckduckgo_adapters
+        adapters.extend(duckduckgo_adapters())
+
+    if _env_enabled("SOCIAL_DISCOVERY", default=False):
+        from finance_news.net.reddit import reddit_adapters
+        adapters.extend(reddit_adapters(allowed))
+
+    if _env_enabled("X_DISCOVERY", default=False):
+        from finance_news.net.nitter import nitter_adapters
+        adapters.extend(nitter_adapters(allowed))
+
+    return adapters
 
 
 # ---------- driver ----------

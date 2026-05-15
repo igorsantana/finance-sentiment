@@ -1,8 +1,10 @@
+@import "@cyberdeck/ui/tokens.css";
+@import "@cyberdeck/ui/styles.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Remove native number-input spinners globally */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
@@ -15,127 +17,70 @@ input[type="number"] {
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
+    --sentiment-positive: 152 55% 38%;
+    --sentiment-neutral: 0 0% 42%;
+    --sentiment-negative: 0 55% 51%;
   }
-  .dark {
-    --background: 240 18% 6%;
-    --foreground: 180 30% 92%;
-    --card: 240 18% 9%;
-    --card-foreground: 180 30% 92%;
-    --primary: 186 100% 55%;
-    --primary-foreground: 240 18% 6%;
-    --secondary: 240 14% 14%;
-    --secondary-foreground: 180 30% 92%;
-    --muted: 240 12% 16%;
-    --muted-foreground: 240 10% 60%;
-    --accent: 320 100% 60%;
-    --accent-foreground: 240 18% 6%;
-    --destructive: 0 90% 62%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 240 14% 18%;
-    --input: 240 14% 18%;
-    --ring: 186 100% 55%;
-    --sentiment-positive: 160 100% 55%;
-    --sentiment-neutral: 240 10% 60%;
-    --sentiment-negative: 320 100% 60%;
-  }
-  * { @apply border-border; }
-  body {
-    @apply bg-background text-foreground;
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  }
-}
-
-/* ── Cyberpunk keyframes ───────────────────────────────────── */
-@keyframes neon-flicker {
-  0%, 18%, 22%, 25%, 53%, 57%, 100% { opacity: 1; }
-  20%, 24%, 55%                      { opacity: 0.45; }
-}
-
-@keyframes glow-breathe {
-  0%, 100% { box-shadow: 0 0 8px hsl(var(--primary) / 0.35); }
-  50%       { box-shadow: 0 0 22px hsl(var(--primary) / 0.7), 0 0 44px hsl(var(--primary) / 0.2); }
-}
-
-@keyframes live-ring {
-  0%        { transform: scale(1); opacity: 0.75; }
-  75%, 100% { transform: scale(2.6); opacity: 0; }
 }
 
 @keyframes price-flash-up {
-  0%   { color: hsl(var(--sentiment-positive)); text-shadow: 0 0 16px hsl(var(--sentiment-positive)); }
-  100% { color: inherit; text-shadow: none; }
+  0% {
+    color: hsl(var(--sentiment-positive));
+  }
+  100% {
+    color: inherit;
+  }
 }
 
 @keyframes price-flash-down {
-  0%   { color: hsl(var(--sentiment-negative)); text-shadow: 0 0 16px hsl(var(--sentiment-negative)); }
-  100% { color: inherit; text-shadow: none; }
-}
-
-@keyframes scanline-sweep {
-  0%   { background-position: -120% bottom; }
-  100% { background-position: 220% bottom; }
+  0% {
+    color: hsl(var(--sentiment-negative));
+  }
+  100% {
+    color: inherit;
+  }
 }
 
 @layer components {
-  .neon-edge {
-    border-color: hsl(var(--primary) / 0.6);
-    box-shadow: 0 0 10px hsl(var(--primary) / 0.35);
-    animation: glow-breathe 3s ease-in-out infinite;
-  }
-  .neon-edge-magenta {
-    border-color: hsl(var(--accent) / 0.6);
-    box-shadow: 0 0 10px hsl(var(--accent) / 0.35);
-  }
-  .neon-flicker {
-    animation: neon-flicker 8s linear infinite;
-  }
   .price-flash-up {
     animation: price-flash-up 0.65s ease-out forwards;
   }
   .price-flash-down {
     animation: price-flash-down 0.65s ease-out forwards;
   }
-  .scanline {
-    border-bottom: 1px solid transparent;
-    background-image: linear-gradient(
-      to right,
-      transparent,
-      hsl(var(--primary) / 0.18),
-      transparent
-    );
-    background-size: 40% 1px;
-    background-repeat: no-repeat;
-    background-position: -120% bottom;
-    animation: scanline-sweep 6s ease-in-out infinite;
+  .neon-edge-magenta {
+    border-color: hsl(var(--sentiment-negative) / 0.5);
+    box-shadow: 0 0 8px hsl(var(--sentiment-negative) / 0.15);
   }
 }
 
 @keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  20%       { transform: translateX(-6px); }
-  40%       { transform: translateX(6px); }
-  60%       { transform: translateX(-4px); }
-  80%       { transform: translateX(4px); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-6px);
+  }
+  40% {
+    transform: translateX(6px);
+  }
+  60% {
+    transform: translateX(-4px);
+  }
+  80% {
+    transform: translateX(4px);
+  }
 }
 
 .animate-shake {
   animation: shake 0.5s ease-in-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .price-flash-up,
+  .price-flash-down,
+  .animate-shake {
+    animation: none !important;
+  }
 }

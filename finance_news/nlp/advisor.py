@@ -62,7 +62,11 @@ _SYSTEM_PROMPT = (
     "prudente: 'vale acompanhar', 'merece atenção', 'pode pressionar'.\n"
     "5. Não invente fatos, números ou eventos que não estejam nos dados "
     "fornecidos. Se um dado faltar, omita em vez de especular.\n"
-    "6. Cada parágrafo tem entre 3 e 5 frases. Mantenha frases curtas e "
+    "6. NUNCA cite quantidades de notícias, artigos ou menções (ex.: "
+    "'47 notícias', '12 matérias', 'alto volume de cobertura' em números). "
+    "O leitor quer leitura de mercado — temas, empresas, sentimento e "
+    "implicações — não estatísticas de volume.\n"
+    "7. Cada parágrafo tem entre 3 e 5 frases. Mantenha frases curtas e "
     "claras — quem lê tem pressa.\n"
     "\n"
     "Saída: responda EXCLUSIVAMENTE com JSON válido no formato "
@@ -183,56 +187,50 @@ def _describe_price_change(daily: list[dict[str, Any]]) -> Optional[str]:
 # ---------- input formatters (LLM-facing) ----------
 
 def _format_daily_market(daily: list[dict[str, Any]]) -> str:
-    """Per-day volume + sentiment breakdown for the market view.
-
-    Spelled out so the LLM doesn't see ``net=+0.32`` and parrot it back.
-    """
+    """Per-day qualitative sentiment for the market view (no article counts)."""
     lines = []
     for d in daily:
         total = d.get("total", 0)
-        pos = d.get("positive", 0)
-        neu = d.get("neutral", 0)
-        neg = d.get("negative", 0)
+        if total <= 0:
+            lines.append(f"- {d['date']}: pouca ou nenhuma cobertura relevante")
+            continue
+        tilt = d.get("net", 0)
         lines.append(
-            f"- {d['date']}: {total} notícias "
-            f"({pos} positivas, {neu} neutras, {neg} negativas)"
+            f"- {d['date']}: tom do noticiário {_describe_tilt(tilt)}"
         )
     return "\n".join(lines) or "- (sem cobertura no período)"
 
 
 def _format_top_companies(items: list[dict[str, Any]], k: int = 8) -> str:
     return "\n".join(
-        f"- {x['name']}: {x['total']} menções, {_describe_tilt(x.get('tilt', 0))}"
+        f"- {x['name']}: noticiário {_describe_tilt(x.get('tilt', 0))} no período"
         for x in items[:k]
     ) or "- (sem empresas em destaque)"
 
 
 def _format_sectors(items: list[dict[str, Any]], k: int = 8) -> str:
     return "\n".join(
-        f"- {x['sector']}: cobertura {_describe_tilt(x.get('tilt', 0))} "
-        f"({x['positive']} positivas, {x['neutral']} neutras, {x['negative']} negativas)"
+        f"- {x['sector']}: clima {_describe_tilt(x.get('tilt', 0))} na cobertura do setor"
         for x in items[:k]
     ) or "- (sem setores destacados)"
 
 
 def _format_daily_company(daily: list[dict[str, Any]]) -> str:
-    """Per-day price + sentiment lines, expressed without raw ratios."""
+    """Per-day price + qualitative sentiment (no article counts)."""
     lines = []
     for d in daily:
         close = d.get("close")
         total = d.get("total", 0)
-        pos = d.get("positive", 0)
-        neg = d.get("negative", 0)
         if total > 0:
-            tilt = d.get("net", 0)
-            sentiment_phrase = _describe_tilt(tilt)
             sentiment_part = (
-                f"{total} notícias ({pos} positivas, {neg} negativas, {sentiment_phrase})"
+                f"noticiário {_describe_tilt(d.get('net', 0))}"
             )
         else:
-            sentiment_part = "sem notícias relevantes"
+            sentiment_part = "sem cobertura relevante na imprensa"
         if close is not None:
-            lines.append(f"- {d['date']}: fechamento R$ {float(close):.2f}; {sentiment_part}")
+            lines.append(
+                f"- {d['date']}: fechamento R$ {float(close):.2f}; {sentiment_part}"
+            )
         else:
             lines.append(f"- {d['date']}: sem cotação; {sentiment_part}")
     return "\n".join(lines) or "- (sem dados no período)"
@@ -255,25 +253,26 @@ def summarize_market_window(
     user_prompt = (
         f"Janela de análise: últimos {window_days} dias úteis até {end}.\n"
         "\n"
-        "Volume e clima do noticiário, dia a dia:\n"
+        "Clima do noticiário, dia a dia (qualitativo):\n"
         f"{_format_daily_market(daily)}\n"
         "\n"
-        "Empresas mais cobertas no período (com leitura qualitativa do clima das notícias):\n"
+        "Empresas em destaque no período e o tom da cobertura sobre cada uma:\n"
         f"{_format_top_companies(top_companies)}\n"
         "\n"
         "Setores e o clima predominante na cobertura:\n"
         f"{_format_sectors(sector_matrix)}\n"
         "\n"
-        "Escreva exatamente três parágrafos, nesta ordem:\n"
-        "1) Panorama geral do mercado: volume da cobertura, ritmo da semana, "
-        "se há uma história dominante. Comece direto — sem saudação nem "
-        "enquadre de reunião ou call.\n"
-        "2) Clima de sentimento e o que isso diz: quais setores e empresas "
-        "estão puxando para cima, quais estão sob pressão, e o que esse "
-        "movimento sugere sobre o humor do investidor.\n"
-        "3) Tendências e o que monitorar nos próximos pregões: temas que "
-        "estão ganhando tração, riscos a observar, e o que vale "
-        "acompanhar de perto. Sem recomendações diretas de compra ou venda."
+        "Escreva exatamente três parágrafos de análise (sem citar quantos "
+        "artigos ou notícias existiram). Nesta ordem:\n"
+        "1) Panorama geral do mercado na janela: narrativa dominante, ritmo "
+        "da semana e o que o noticiário financeiro está sinalizando. "
+        "Comece direto — sem saudação nem enquadre de reunião.\n"
+        "2) Sentimento e leitura setorial/empresarial: quais nomes e setores "
+        "aparecem com tom mais construtivo ou mais cauteloso, e o que isso "
+        "sugere sobre o humor do investidor.\n"
+        "3) Tendências e pontos de atenção para os próximos pregões: temas "
+        "em evidência, riscos e catalisadores. Sem recomendações diretas "
+        "de compra ou venda."
     )
     return _call(user_prompt, model)
 
@@ -307,17 +306,15 @@ def summarize_company_window(
         f"Relação observada entre preço e noticiário: {correlation_phrase}.\n"
         f"Assuntos mais frequentes na cobertura: {subj}.\n"
         "\n"
-        "Escreva exatamente três parágrafos, nesta ordem:\n"
-        "1) Panorama da empresa no período: quais histórias estão "
-        "dominando o noticiário (use os assuntos listados como guia) e "
-        "como isso se encaixa no momento atual da companhia. Comece direto "
-        "no assunto — sem saudação nem abertura metáforica.\n"
-        "2) Comportamento da ação e clima das notícias: como o preço se "
-        "moveu, e se ele andou junto, contra ou indiferente ao tom do "
-        "que saiu na imprensa. Conecte os dois lados em prosa, sem citar "
-        "números crus de correlação.\n"
-        "3) Tendências e o que vale acompanhar nas próximas sessões: "
-        "temas que podem ganhar peso, gatilhos a observar, e cuidados "
-        "que merecem atenção. Sem recomendar compra ou venda."
+        "Escreva exatamente três parágrafos de análise (sem citar quantos "
+        "artigos saíram). Nesta ordem:\n"
+        "1) Panorama da empresa na janela: histórias e assuntos que dominam "
+        "a cobertura (use os assuntos listados) e o que isso indica sobre "
+        "o momento da companhia. Comece direto no assunto.\n"
+        "2) Ação versus tom do noticiário: como o preço se comportou e se "
+        "o mercado parece alinhado, contrário ou indiferente ao que a "
+        "imprensa destacou — em prosa, sem jargão estatístico.\n"
+        "3) Tendências e pontos de atenção: temas que podem ganhar peso, "
+        "gatilhos e riscos. Sem recomendar compra ou venda."
     )
     return _call(user_prompt, model)

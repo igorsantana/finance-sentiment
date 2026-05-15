@@ -13,10 +13,12 @@ wins:
 
 Pipeline shape (per run):
 
-    discovery.discover_articles(day)   # 19 adapters in parallel, dedup
+    discovery.discover_articles(day)   # ~25 adapters (sitemaps + WP + RSS + HTML)
         ↓
     pre-match (title + excerpt)        # drop articles that don't mention
                                        #   any tracked company
+        ↓
+    GDELT fallback (optional)          # one BR-pt query per company still at 0 hits
         ↓
     fetch bodies (ThreadPoolExecutor)
         ↓
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -62,6 +65,7 @@ except ImportError:
 from finance_news import logconfig
 from finance_news.net import discovery
 from finance_news.net.fetch import fetch_article_direct
+from finance_news.net import gdelt as gdelt_discovery
 from finance_news.nlp.companies import (
     CompanyMatcher,
     load_companies_from_db,
@@ -80,6 +84,32 @@ SP_TZ = ZoneInfo("America/Sao_Paulo")
 # trickle. The sleep here is just so we never hammer a single host
 # with a tight loop.
 INTER_FETCH_SLEEP_S = 0.25
+
+# GDELT per-company fallback for tickers with zero publisher-listing hits.
+# Set GDELT_FALLBACK=0 to disable. GDELT_MAX_WORKERS caps concurrent API calls.
+GDELT_FALLBACK_ENABLED = os.environ.get("GDELT_FALLBACK", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+
+# strict | finance_hosts | all_listed
+INGEST_PREMATCH_MODE = os.environ.get("INGEST_PREMATCH_MODE", "finance_hosts").strip().lower()
+
+_FINANCE_KW_RE = re.compile(
+    r"\b(bolsa|b3|ibovespa|ações|acao|acoes|dividendos|mercado|"
+    r"financeir|economia|investiment|ticker|cvm|bovespa)\b",
+    re.IGNORECASE,
+)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        n = int(raw)
+        return n if n > 0 else default
+    except ValueError:
+        return default
 
 
 def _env_workers(default: int = 4) -> int:
@@ -129,6 +159,32 @@ def _prematch(
     text = " ".join(text_parts)
     matches, _emb = matcher.match(text, title=article.title or "")
     return [m.ticker_root for m in matches]
+
+
+def _title_has_finance_keyword(title: str) -> bool:
+    return bool(_FINANCE_KW_RE.search(title or ""))
+
+
+def _should_fetch_candidate(
+    article: discovery.DiscoveredArticle,
+    matcher: CompanyMatcher,
+    allow_hosts: set[str],
+) -> tuple[bool, list[str]]:
+    """Decide whether to body-fetch ``article``; return (fetch?, matched_roots)."""
+    roots = _prematch(article, matcher)
+    mode = INGEST_PREMATCH_MODE
+    if mode == "all_listed":
+        return True, roots
+    if roots:
+        return True, roots
+    if mode == "strict":
+        return False, []
+    host = article.publisher_host.lower().removeprefix("www.")
+    if mode == "finance_hosts" and host in allow_hosts:
+        return True, roots
+    if mode == "finance_hosts" and _title_has_finance_keyword(article.title):
+        return True, roots
+    return False, roots
 
 
 # ---------- body fetch stage ----------
@@ -197,9 +253,16 @@ def run(
 
     matcher = CompanyMatcher([to_company(c) for c in company_rows])
     workers = _env_workers()
+    allow_hosts = discovery.publisher_host_allowlist()
+    try:
+        with db.connect() as conn:
+            for h in db.fetch_publisher_hostnames(conn):
+                allow_hosts.add(h.lower().removeprefix("www."))
+    except Exception as e:
+        log.debug("publisher allowlist from DB skipped: %s", e)
     log.info(
-        "Starting ingest — date=%s, %d companies, %d worker(s)",
-        day, len(company_rows), workers,
+        "Starting ingest — date=%s, %d companies, %d worker(s), prematch=%s",
+        day, len(company_rows), workers, INGEST_PREMATCH_MODE,
     )
 
     # --- Stage 1: discovery ----------------------------------------------
@@ -223,32 +286,125 @@ def run(
     n_listed_raw = sum(len(r.articles) for r in adapter_results)
     n_failed = sum(1 for r in adapter_results if r.error)
     n_ok = len(adapter_results) - n_failed
+    n_listed = len(discovered)
     log.info(
         "Discovery done — %d article(s) listed, %d unique after dedup, %.2fs · "
         "%d publisher(s) OK, %d with errors",
-        n_listed_raw, len(discovered), disc_s, n_ok, n_failed,
+        n_listed_raw, n_listed, disc_s, n_ok, n_failed,
     )
+    log.info("Funnel — listed: %d", n_listed)
 
-    # --- Stage 2: pre-match (title + excerpt) ----------------------------
-    log.info("Pre-matching %d article(s) against %d tracked companies…",
-             len(discovered), len(company_rows))
+    # --- Stage 2: pre-match / fetch gate ---------------------------------
+    log.info(
+        "Pre-matching %d article(s) (mode=%s)…",
+        n_listed, INGEST_PREMATCH_MODE,
+    )
     candidates: list[tuple[discovery.DiscoveredArticle, list[str]]] = []
     for art in discovered:
-        roots = _prematch(art, matcher)
-        if roots:
+        fetch_ok, roots = _should_fetch_candidate(art, matcher, allow_hosts)
+        if fetch_ok:
             candidates.append((art, roots))
+    n_prematch = len(candidates)
     log.info(
-        "Pre-match done — %d/%d article(s) mention ≥1 tracked company",
-        len(candidates), len(discovered),
+        "Pre-match done — %d/%d article(s) selected for body fetch",
+        n_prematch, n_listed,
     )
+    log.info("Funnel — listed: %d → pre-matched: %d", n_listed, n_prematch)
+
+    # --- Stage 2b: GDELT fallback for companies with zero listing hits ------
+    covered_roots: set[str] = set()
+    for _art, roots in candidates:
+        covered_roots.update(roots)
+    uncovered = [
+        c for c in company_rows
+        if c.get("ticker_root") and c["ticker_root"] not in covered_roots
+    ]
+    if uncovered and GDELT_FALLBACK_ENABLED:
+        log.info(
+            "GDELT fallback — %d company(ies) had no publisher-listing hits",
+            len(uncovered),
+        )
+        seen_urls = {art.url for art, _ in candidates}
+        gdelt_added = 0
+
+        # Phase 1: bulk day queries (broad + keywords; caps at 250 each).
+        bulk = gdelt_discovery.discover_br_day_bulk_all(day)
+        log.info("GDELT bulk — %d article(s), pre-matching…", len(bulk))
+        for art in bulk:
+            if art.url in seen_urls:
+                continue
+            fetch_ok, roots = _should_fetch_candidate(art, matcher, allow_hosts)
+            if fetch_ok:
+                seen_urls.add(art.url)
+                candidates.append((art, roots))
+                gdelt_added += 1
+
+        covered_roots = set()
+        for _art, roots in candidates:
+            covered_roots.update(roots)
+        still_uncovered = [
+            c for c in company_rows
+            if c.get("ticker_root") and c["ticker_root"] not in covered_roots
+        ]
+
+        # Phase 2: optional per-company queries (slow — off by default).
+        max_per_company = _env_int("GDELT_MAX_PER_COMPANY", 0)
+        if still_uncovered and max_per_company > 0:
+            batch = still_uncovered[:max_per_company]
+            log.info(
+                "GDELT per-company — %d of %d still uncovered "
+                "(GDELT_MAX_PER_COMPANY=%d)",
+                len(batch), len(still_uncovered), max_per_company,
+            )
+            gdelt_articles, gd_ok, gd_fail = gdelt_discovery.discover_for_companies(
+                batch,
+                day,
+                max_workers=_env_int(
+                    "GDELT_MAX_WORKERS", gdelt_discovery.GDELT_MAX_WORKERS,
+                ),
+            )
+            log.info(
+                "GDELT per-company done — %d article(s), %d OK / %d failed",
+                len(gdelt_articles), gd_ok, gd_fail,
+            )
+            for art in gdelt_articles:
+                if art.url in seen_urls:
+                    continue
+                fetch_ok, roots = _should_fetch_candidate(art, matcher, allow_hosts)
+                if fetch_ok:
+                    seen_urls.add(art.url)
+                    candidates.append((art, roots))
+                    gdelt_added += 1
+        elif still_uncovered:
+            log.info(
+                "GDELT per-company skipped — %d still uncovered "
+                "(set GDELT_MAX_PER_COMPANY>0 to enable; bulk-only is default)",
+                len(still_uncovered),
+            )
+
+        if gdelt_added:
+            log.info("GDELT fallback added %d new pre-matched candidate(s)", gdelt_added)
+        else:
+            log.info("GDELT fallback — no new pre-matched candidates")
+    elif uncovered and not GDELT_FALLBACK_ENABLED:
+        log.info(
+            "GDELT fallback disabled — %d company(ies) still without listing hits",
+            len(uncovered),
+        )
+
+    n_candidates = len(candidates)
     if not candidates:
         log.info("Nothing to fetch — exiting.")
+        log.info(
+            "Funnel — listed: %d → pre-matched: %d → fetched: 0 → inserted: 0",
+            n_listed, n_prematch,
+        )
         if progress:
             progress("ingest", 1, 1)
         return 0
 
     # --- Stage 3: body fetch ---------------------------------------------
-    total = len(candidates)
+    total = n_candidates
     log.info("Fetching article bodies — %d candidate(s) with %d worker(s)…",
              total, workers)
     if progress:
@@ -286,9 +442,14 @@ def run(
                 )
             time.sleep(INTER_FETCH_SLEEP_S)
 
+    n_fetched = len(rows_to_write)
     log.info(
         "Body fetch done — %d/%d candidate(s) yielded text",
-        len(rows_to_write), total,
+        n_fetched, total,
+    )
+    log.info(
+        "Funnel — listed: %d → pre-matched: %d → fetched: %d",
+        n_listed, n_prematch, n_fetched,
     )
 
     # --- Stage 4: persist ------------------------------------------------
@@ -313,7 +474,11 @@ def run(
                 inserted += 1
         conn.commit()
 
-    duplicates = len(rows_to_write) - inserted
+    duplicates = n_fetched - inserted
+    log.info(
+        "Funnel — listed: %d → pre-matched: %d → fetched: %d → inserted: %d",
+        n_listed, n_prematch, n_fetched, inserted,
+    )
     if duplicates > 0:
         log.info(
             "Ingest complete — %d new article(s) inserted, %d duplicate(s) skipped",

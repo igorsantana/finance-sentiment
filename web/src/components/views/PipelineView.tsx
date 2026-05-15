@@ -1,5 +1,5 @@
 import { Loader2, PlayCircle } from "lucide-react";
-import { Button } from "../ui/button";
+import { Button } from "@cyberdeck/ui";
 
 export type PipelineViewProps = {
   runDate: string;
@@ -19,7 +19,7 @@ export function PipelineView({
   onStart,
 }: PipelineViewProps) {
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="animate-fade-in space-y-6 max-w-2xl">
       <div>
         <h2 className="font-mono uppercase tracking-[0.25em] text-xs text-muted-foreground mb-1">
           Pipeline
@@ -41,7 +41,7 @@ export function PipelineView({
             className="bg-background border border-border rounded-md px-3 py-2 text-sm font-mono focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
           />
         </label>
-        <Button onClick={onStart} disabled={!canRun}>
+        <Button variant="tactile" onClick={onStart} disabled={!canRun} className={running ? "pulse-soft" : ""}>
           {running ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

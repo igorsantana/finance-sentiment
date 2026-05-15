@@ -25,14 +25,15 @@ _SUMMARY_CHAR_CAP = 600
 _TIMEOUT_SECONDS = 120
 
 _SYSTEM_PROMPT = (
-    "Você é um analista financeiro brasileiro. Recebe uma lista de manchetes "
-    "e resumos de notícias do dia sobre uma empresa de capital aberto na B3 "
-    "e produz uma análise objetiva em português. "
+    "Você é um analista financeiro brasileiro. Recebe manchetes e resumos "
+    "do dia sobre uma empresa listada na B3 e sintetiza o que o noticiário "
+    "revela sobre ela — temas, fatos e tom — em português objetivo. "
     "Responda EXCLUSIVAMENTE com JSON válido no formato "
-    '{"good": ["..."], "bad": ["..."]}, contendo entre 3 e 5 pontos '
-    "positivos (good) e entre 3 e 5 pontos negativos (bad). Cada ponto é "
-    "uma frase curta (até 25 palavras), neutra e factual, citando o que as "
-    "notícias indicam. Não invente fatos que não estejam nas notícias."
+    '{"good": ["..."], "bad": ["..."]}, com 3 a 5 pontos em cada lista. "
+    "Cada ponto é uma frase curta (até 25 palavras) de análise: o que "
+    "aconteceu, o sentimento implícito e por que importa para o investidor. "
+    "Não cite quantidade de matérias nem ordinal ('três notícias'). "
+    "Não invente fatos ausentes nas fontes."
 )
 
 
@@ -49,7 +50,7 @@ def _client():
 
 def _format_articles(articles: list[dict[str, Any]]) -> str:
     lines: list[str] = []
-    for i, a in enumerate(articles[:_MAX_ARTICLES], start=1):
+    for a in articles[:_MAX_ARTICLES]:
         title = (a.get("title") or "").strip()
         summary = (a.get("summary") or "").strip()
         if len(summary) > _SUMMARY_CHAR_CAP:
@@ -58,8 +59,8 @@ def _format_articles(articles: list[dict[str, Any]]) -> str:
         score = a.get("sentiment_score")
         score_str = f"{float(score):.2f}" if score is not None else "?"
         site = a.get("site") or ""
-        meta = f"[{sentiment} {score_str}] {site}".strip()
-        lines.append(f"{i}. {meta}\n   {title}\n   {summary}")
+        meta = f"[tom: {sentiment}, score {score_str}] {site}".strip()
+        lines.append(f"— {meta}\n  {title}\n  {summary}")
     return "\n\n".join(lines)
 
 
@@ -79,9 +80,11 @@ def summarize_company_day(
     model = model or os.environ.get("LLM_MODEL", "llama-3.3-70b-versatile")
     user_prompt = (
         f"Empresa: {name} (ticker {ticker}).\n\n"
-        f"Notícias do dia ({len(articles[:_MAX_ARTICLES])} de {len(articles)}):\n\n"
+        "Material do dia (manchetes, veículo e tom de cada matéria):\n\n"
         f"{_format_articles(articles)}\n\n"
-        "Produza o JSON com pontos positivos e negativos."
+        "Sintetize em JSON good/bad: visão geral do dia para quem investe "
+        "nessa ação — fatos, temas e leitura de sentimento, sem contar "
+        "quantas notícias existiram."
     )
 
     try:
